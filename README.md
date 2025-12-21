@@ -73,8 +73,13 @@ The mic sketch outputs raw 16-bit PCM over USB serial. `pyplayer.py` plays it li
 - If you change pins, update them in each sketch to match your wiring.
 
 ## Roadmap
-- Integrate mic input into the main app (levels/visualizer, recorder, or voice features).
-- Add a simple audio recorder with playback and file export over USB/Serial.
-- Build a basic app launcher (games, tools, settings) with persistent save data.
-- Add Wi-Fi features (OTA updates, time sync, web config, or content sync).
+- Boot-up sound (Nokia-style jingle) + splash animation.
+- Start screen with logo and version info.
+- Main menu with apps (Snake, Recorder, Settings).
+- Button remap and long-press shortcuts (e.g., Start = menu).
+- Settings UI (volume, brightness, mic gain).
+- Save data in NVS (high scores, last app).
+- Voice recorder with waveform view + playback.
+- Wi-Fi setup/config screen (no time sync needed).
 - Refine audio (mixer, volume UI, more SFX/music).
+- Add more games (Pong, Breakout, or small UI demos).

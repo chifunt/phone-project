@@ -10,7 +10,7 @@
 // -----------------------------------------------------
 
 // ---------------- AUDIO SETTINGS ---------------------
-#define SAMPLE_RATE  44100
+#define SAMPLE_RATE  24000
 #define BUF_FRAMES   512
 #define MAX_AMP      30000     // never exceed ~32000 for 16-bit
 // -----------------------------------------------------

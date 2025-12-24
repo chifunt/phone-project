@@ -5,7 +5,7 @@
 #define I2S_LRCL  18   // WS / LRCL
 #define I2S_DOUT  16   // SD  -> ESP32 data-in
 #define I2S_PORT  I2S_NUM_0
-#define SR        16000
+#define SR        24000
 
 void setup_i2s() {
   i2s_config_t cfg = {

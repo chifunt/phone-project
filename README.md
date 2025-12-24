@@ -27,12 +27,12 @@ All pins below are from the sketches and are easy to change in code.
 - SCL: GPIO 5
 - Address: 0x3C (fallback to 0x3D in test sketch)
 
-### Speaker (MAX98357, I2S TX)
+### Speaker (MAX98357, I2S TX @ 24 kHz)
 - DIN: GPIO 9
 - BCLK: GPIO 10
 - LRC/WS: GPIO 11
 
-### Microphone (I2S RX)
+### Microphone (I2S RX @ 24 kHz)
 - SD (data out from mic): GPIO 16
 - BCLK: GPIO 17
 - WS/LRCL: GPIO 18
@@ -58,7 +58,7 @@ All pins below are from the sketches and are easy to change in code.
   - Snake game with OLED, buttons, and I2S audio SFX. Mic not integrated yet.
 
 ## Mic Streaming to Mac
-The mic sketch outputs raw 16-bit PCM over USB serial. `pyplayer.py` plays it live.
+The mic sketch outputs raw 16-bit PCM mono at 24 kHz over USB serial. `pyplayer.py` plays it live.
 
 1) Flash `sketch-micinmp-working/sketch-micinmp-working.ino`
 2) Edit `PORT` in `pyplayer.py` to match your device (ex: `/dev/cu.usbmodem101`)

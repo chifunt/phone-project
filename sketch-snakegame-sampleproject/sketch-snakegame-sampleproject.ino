@@ -55,7 +55,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define PIN_I2S_WS   11
 #define I2S_PORT     I2S_NUM_1
 
-#define SAMPLE_RATE  44100
+#define SAMPLE_RATE  24000
 #define BUF_FRAMES   256
 #define MAX_AMP      30000
 

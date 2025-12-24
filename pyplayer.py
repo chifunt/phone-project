@@ -3,7 +3,7 @@ import sys, signal, serial, sounddevice as sd
 
 PORT = '/dev/cu.usbmodem101'  # change if needed
 BAUD = 115200
-RATE = 16000
+RATE = 24000
 BLOCK_SAMPLES = 256           # matches N above
 
 def stop(*_):

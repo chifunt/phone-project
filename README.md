@@ -45,6 +45,11 @@ All pins below are from the sketches and are easy to change in code.
 - ESP-IDF I2S driver: `driver/i2s.h`
 - Python (Mac audio playback): `pyserial`, `sounddevice`
 
+## Audio Standard
+- Sample rate: 24 kHz
+- Format: PCM16, mono
+- Goal: keep input/output aligned for future voice features (e.g., Whisper)
+
 ## Sketches
 - `sketch-buttons-working/sketch-buttons-working.ino`
   - Reads 8 buttons with debounce and prints presses/releases over Serial.

@@ -19,7 +19,7 @@ public:
   void playSfx(SfxId id);
   void playPcm(const int16_t* pcm, int frames);
   void stop();
-  bool isPcmPlaying() const { return pcmFramesLeft > 0; }
+  bool isPcmPlaying() const { return pcmCount > 0; }
 
 private:
   struct Note {
@@ -30,6 +30,9 @@ private:
   void startSequence(const Note* seq, uint8_t len);
   bool advanceNote();
   void renderFrames(int frames);
+  void renderPcmFrames(int frames);
+  static void audioTaskThunk(void* arg);
+  void audioTaskLoop();
 
   float volume = 0.2f;
   float phase = 0.0f;
@@ -42,6 +45,12 @@ private:
   uint8_t sequenceIndex = 0;
   bool playing = false;
 
-  const int16_t* pcmData = nullptr;
-  int pcmFramesLeft = 0;
+  static const int PCM_RING_FRAMES = 2048;
+  int16_t pcmRing[PCM_RING_FRAMES];
+  volatile int pcmHead = 0;
+  volatile int pcmTail = 0;
+  volatile int pcmCount = 0;
+
+  bool taskRunning = false;
+  TaskHandle_t taskHandle = nullptr;
 };

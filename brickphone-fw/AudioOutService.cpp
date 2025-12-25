@@ -35,29 +35,13 @@ void AudioOutService::begin() {
   i2s_driver_install(I2S_OUT_PORT, &cfg, 0, NULL);
   i2s_set_pin(I2S_OUT_PORT, &pins);
   i2s_set_clk(I2S_OUT_PORT, AUDIO_SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
+
+  taskRunning = true;
+  xTaskCreatePinnedToCore(audioTaskThunk, "audioOut", 4096, this, 2, &taskHandle, 1);
 }
 
 void AudioOutService::tick(unsigned long) {
-  if (pcmData && pcmFramesLeft > 0) {
-    int frames = (pcmFramesLeft > AUDIO_FRAMES) ? AUDIO_FRAMES : pcmFramesLeft;
-    static int16_t buffer[AUDIO_FRAMES * 2];
-    for (int i = 0; i < frames; ++i) {
-      int16_t s = pcmData[i];
-      buffer[2 * i] = s;
-      buffer[2 * i + 1] = s;
-    }
-    size_t bytesWritten = 0;
-    i2s_write(I2S_OUT_PORT, buffer, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
-    pcmData += frames;
-    pcmFramesLeft -= frames;
-    if (pcmFramesLeft <= 0) {
-      pcmData = nullptr;
-    }
-    return;
-  }
-
-  if (!playing) return;
-  renderFrames(AUDIO_FRAMES);
+  (void)0;
 }
 
 void AudioOutService::setVolume(float vol) {
@@ -92,8 +76,12 @@ void AudioOutService::playSfx(SfxId id) {
 
 void AudioOutService::playPcm(const int16_t* pcm, int frames) {
   if (!pcm || frames <= 0) return;
-  pcmData = pcm;
-  pcmFramesLeft = frames;
+  for (int i = 0; i < frames; ++i) {
+    if (pcmCount >= PCM_RING_FRAMES) break;
+    pcmRing[pcmHead] = pcm[i];
+    pcmHead = (pcmHead + 1) % PCM_RING_FRAMES;
+    pcmCount++;
+  }
 }
 
 void AudioOutService::stop() {
@@ -104,8 +92,9 @@ void AudioOutService::stop() {
   currentMidi = -1;
   noteSamplesLeft = 0;
   noteTotalSamples = 0;
-  pcmData = nullptr;
-  pcmFramesLeft = 0;
+  pcmHead = 0;
+  pcmTail = 0;
+  pcmCount = 0;
 }
 
 void AudioOutService::startSequence(const Note* seq, uint8_t len) {
@@ -164,4 +153,38 @@ void AudioOutService::renderFrames(int frames) {
 
   size_t bytesWritten = 0;
   i2s_write(I2S_OUT_PORT, buffer, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+}
+
+void AudioOutService::renderPcmFrames(int frames) {
+  static int16_t buffer[AUDIO_FRAMES * 2];
+  for (int i = 0; i < frames; ++i) {
+    int16_t s = 0;
+    if (pcmCount > 0) {
+      s = pcmRing[pcmTail];
+      pcmTail = (pcmTail + 1) % PCM_RING_FRAMES;
+      pcmCount--;
+    }
+    buffer[2 * i] = s;
+    buffer[2 * i + 1] = s;
+  }
+  size_t bytesWritten = 0;
+  i2s_write(I2S_OUT_PORT, buffer, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+}
+
+void AudioOutService::audioTaskThunk(void* arg) {
+  auto* self = reinterpret_cast<AudioOutService*>(arg);
+  self->audioTaskLoop();
+}
+
+void AudioOutService::audioTaskLoop() {
+  while (taskRunning) {
+    if (pcmCount > 0) {
+      renderPcmFrames(AUDIO_FRAMES);
+    } else if (playing) {
+      renderFrames(AUDIO_FRAMES);
+    } else {
+      vTaskDelay(1);
+    }
+  }
+  vTaskDelete(nullptr);
 }

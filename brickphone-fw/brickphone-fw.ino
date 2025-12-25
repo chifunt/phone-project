@@ -48,6 +48,7 @@ void setup() {
   screens.registerScreen(ScreenId::Recorder, &appRecorder);
   screens.registerScreen(ScreenId::Voice, &appVoice);
   screens.registerScreen(ScreenId::Settings, &appSettings);
+  screens.setAudio(&audioOut);
 
   screens.set(ScreenId::Splash);
   lastTickMs = millis();

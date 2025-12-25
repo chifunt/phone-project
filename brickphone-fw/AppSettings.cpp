@@ -18,6 +18,7 @@ void AppSettings::onEnter() {
 
 void AppSettings::handleInput(InputService& input) {
   if (input.pressed(BTN_B)) {
+    audioOut.playSfx(SFX_CLICK);
     screenManager.set(ScreenId::Menu);
     return;
   }
@@ -26,16 +27,20 @@ void AppSettings::handleInput(InputService& input) {
     volumePercent += 5;
     if (volumePercent > 100) volumePercent = 100;
     if (!muted) audioOut.setVolume(volumePercent / 100.0f);
+    audioOut.playSfx(SFX_CLICK);
   } else if (input.pressed(BTN_DOWN)) {
     volumePercent -= 5;
     if (volumePercent < 0) volumePercent = 0;
     if (!muted) audioOut.setVolume(volumePercent / 100.0f);
+    audioOut.playSfx(SFX_CLICK);
   }
 
   if (input.pressed(BTN_LEFT)) {
     wifiIndex = (wifiIndex == 0) ? (kWifiCount - 1) : (wifiIndex - 1);
+    audioOut.playSfx(SFX_CLICK);
   } else if (input.pressed(BTN_RIGHT)) {
     wifiIndex = (wifiIndex + 1) % kWifiCount;
+    audioOut.playSfx(SFX_CLICK);
   }
 
   if (input.pressed(BTN_A)) {
@@ -46,10 +51,12 @@ void AppSettings::handleInput(InputService& input) {
       muted = true;
       audioOut.setVolume(0.0f);
     }
+    audioOut.playSfx(SFX_CLICK);
   }
 
   if (input.pressed(BTN_SELECT)) {
     netService.connectWifi(kWifiPresets[wifiIndex].ssid, kWifiPresets[wifiIndex].pass);
+    audioOut.playSfx(SFX_START);
   }
 }
 

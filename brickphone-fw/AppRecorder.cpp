@@ -18,12 +18,15 @@ void AppRecorder::handleInput(InputService& input) {
   if (input.pressed(BTN_A)) {
     if (recording) stopRecording();
     else startRecording();
+    audioOut.playSfx(SFX_START);
   }
   if (input.pressed(BTN_B)) {
     startPlayback();
+    audioOut.playSfx(SFX_START);
   }
   if (input.pressed(BTN_SELECT)) {
     clearRecording();
+    audioOut.playSfx(SFX_CLICK);
   }
 }
 

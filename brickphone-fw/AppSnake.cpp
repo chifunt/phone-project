@@ -14,15 +14,18 @@ void AppSnake::onEnter() {
 void AppSnake::handleInput(InputService& input) {
   if (input.pressed(BTN_A)) {
     soundEnabled = !soundEnabled;
+    audioOut.playSfx(SFX_CLICK);
   }
   if (input.pressed(BTN_SELECT)) {
     fastMode = !fastMode;
     stepIntervalMs = fastMode ? 70 : 120;
+    audioOut.playSfx(SFX_CLICK);
   }
   if (input.pressed(BTN_B)) {
     resetGame();
     running = true;
     gameOver = false;
+    audioOut.playSfx(SFX_START);
   }
 
   if (input.pressed(BTN_UP)) nextDir = DIR_UP;

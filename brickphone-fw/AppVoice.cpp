@@ -21,10 +21,12 @@ void AppVoice::handleInput(InputService& input) {
   if (input.pressed(BTN_A)) {
     state = STATE_LISTENING;
     micIn.setMode(MIC_BACKEND_STREAM);
+    audioOut.playSfx(SFX_START);
   } else if (input.released(BTN_A)) {
     if (state == STATE_LISTENING) {
       micIn.setMode(MIC_OFF);
       state = STATE_READY;
+      audioOut.playSfx(SFX_CLICK);
     }
   }
 }

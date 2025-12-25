@@ -26,19 +26,43 @@ void MenuScreen::handleInput(InputService& input) {
     audioOut.playSfx(SFX_START);
     screenManager.set(kEntries[selected].id);
   }
+
+  const uint8_t visibleRows = 3;
+  if (selected < scroll) scroll = selected;
+  if (selected >= scroll + visibleRows) scroll = selected - (visibleRows - 1);
 }
 
 void MenuScreen::render(DisplayService& display) {
   display.drawText(0, 0, "BRICKPHONE", 1);
 
-  for (uint8_t i = 0; i < kEntryCount; ++i) {
-    int16_t y = 14 + (i * 12);
-    if (i == selected) {
-      display.drawBitmap(0, y + 2, ICON_ARROW_8X8, 8, 8);
+  const int16_t listTop = 12;
+  const int16_t rowH = 14;
+  const uint8_t visibleRows = 3;
+
+  for (uint8_t i = 0; i < visibleRows; ++i) {
+    uint8_t idx = scroll + i;
+    if (idx >= kEntryCount) break;
+    int16_t y = listTop + (i * rowH);
+    if (idx == selected) {
+      display.drawBitmap(0, y + 3, ICON_ARROW_8X8, 8, 8);
     }
-    display.drawBitmap(10, y, kEntries[i].icon, 16, 16);
-    display.drawText(28, y + 4, kEntries[i].label, 1);
+    display.drawBitmap(10, y, kEntries[idx].icon, 16, 16);
+    display.drawText(28, y + 4, kEntries[idx].label, 1);
   }
+
+  // Scrollbar
+  int16_t barX = 122;
+  int16_t barY = listTop;
+  int16_t barH = rowH * visibleRows;
+  display.drawRect(barX, barY, 4, barH);
+  int16_t thumbH = (barH * visibleRows) / kEntryCount;
+  if (thumbH < 4) thumbH = 4;
+  int16_t maxOffset = kEntryCount - visibleRows;
+  int16_t thumbY = barY;
+  if (maxOffset > 0) {
+    thumbY = barY + (barH - thumbH) * scroll / maxOffset;
+  }
+  display.fillRect(barX + 1, thumbY + 1, 2, thumbH - 2);
 
   display.drawText(0, 56, "A select  START menu", 1);
 }

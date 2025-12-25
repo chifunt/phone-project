@@ -20,4 +20,5 @@ private:
   ScreenManager& screenManager;
   AudioOutService& audioOut;
   uint8_t selected = 0;
+  uint8_t scroll = 0;
 };

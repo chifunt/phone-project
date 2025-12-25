@@ -13,6 +13,9 @@
 #include "AppRecorder.h"
 #include "AppVoice.h"
 #include "AppSettings.h"
+#include "AppPong.h"
+#include "AppBreakout.h"
+#include "AppSpaceInvaders.h"
 
 InputService input;
 DisplayService display;
@@ -29,6 +32,9 @@ AppSnake appSnake(audioOut);
 AppRecorder appRecorder(micIn, audioOut);
 AppVoice appVoice(net, micIn, audioOut);
 AppSettings appSettings(audioOut, net, screens);
+AppPong appPong(audioOut);
+AppBreakout appBreakout(audioOut);
+AppSpaceInvaders appSpaceInvaders(audioOut);
 
 unsigned long lastTickMs = 0;
 unsigned long lastDisplayMs = 0;
@@ -48,6 +54,9 @@ void setup() {
   screens.registerScreen(ScreenId::Recorder, &appRecorder);
   screens.registerScreen(ScreenId::Voice, &appVoice);
   screens.registerScreen(ScreenId::Settings, &appSettings);
+  screens.registerScreen(ScreenId::Pong, &appPong);
+  screens.registerScreen(ScreenId::Breakout, &appBreakout);
+  screens.registerScreen(ScreenId::SpaceInvaders, &appSpaceInvaders);
   screens.setAudio(&audioOut);
 
   screens.set(ScreenId::Splash);

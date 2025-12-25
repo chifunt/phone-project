@@ -11,7 +11,10 @@ enum class ScreenId {
   Snake,
   Recorder,
   Voice,
-  Settings
+  Settings,
+  Pong,
+  Breakout,
+  SpaceInvaders
 };
 
 class ScreenManager {
@@ -24,7 +27,7 @@ public:
   ScreenId currentId() const { return current; }
 
 private:
-  Screen* screens[6] = {};
+  Screen* screens[9] = {};
   ScreenId current = ScreenId::Splash;
   Screen* currentScreen = nullptr;
   AudioOutService* audioOut = nullptr;

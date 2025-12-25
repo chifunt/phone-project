@@ -17,7 +17,8 @@ public:
   void setVolume(float vol);
   void playToneMidi(int midi, int ms);
   void playSfx(SfxId id);
-  void playPcm(const int16_t* pcm, int frames);
+  int playPcm(const int16_t* pcm, int frames);
+  int pcmFree() const;
   void stop();
   bool isPcmPlaying() const { return pcmCount > 0; }
 
@@ -50,6 +51,7 @@ private:
   volatile int pcmHead = 0;
   volatile int pcmTail = 0;
   volatile int pcmCount = 0;
+  portMUX_TYPE pcmMux = portMUX_INITIALIZER_UNLOCKED;
 
   bool taskRunning = false;
   TaskHandle_t taskHandle = nullptr;

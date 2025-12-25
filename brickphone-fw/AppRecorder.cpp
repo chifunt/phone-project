@@ -8,6 +8,7 @@ AppRecorder::AppRecorder(MicInService& mic, AudioOutService& audio)
 
 void AppRecorder::onEnter() {
   micIn.setMode(MIC_OFF);
+  playing = false;
 }
 
 void AppRecorder::onExit() {
@@ -31,6 +32,20 @@ void AppRecorder::handleInput(InputService& input) {
 }
 
 void AppRecorder::tick(unsigned long) {
+  if (playing) {
+    int remaining = framesRecorded - playIndex;
+    if (remaining <= 0) {
+      playing = false;
+      return;
+    }
+    int freeFrames = audioOut.pcmFree();
+    if (freeFrames > 0) {
+      int toQueue = remaining > freeFrames ? freeFrames : remaining;
+      int queued = audioOut.playPcm(&buffer[playIndex], toQueue);
+      playIndex += queued;
+    }
+  }
+
   if (!recording) return;
   int framesLeft = kMaxFrames - framesRecorded;
   if (framesLeft <= 0) {
@@ -65,6 +80,9 @@ void AppRecorder::render(DisplayService& display) {
 void AppRecorder::startRecording() {
   framesRecorded = 0;
   recording = true;
+  playing = false;
+  playIndex = 0;
+  audioOut.stop();
   micIn.setMode(MIC_LOCAL_RECORD);
 }
 
@@ -75,10 +93,15 @@ void AppRecorder::stopRecording() {
 
 void AppRecorder::startPlayback() {
   if (framesRecorded <= 0 || recording) return;
-  audioOut.playPcm(buffer, framesRecorded);
+  playing = true;
+  playIndex = 0;
+  audioOut.stop();
 }
 
 void AppRecorder::clearRecording() {
   if (recording) return;
   framesRecorded = 0;
+  playing = false;
+  playIndex = 0;
+  audioOut.stop();
 }

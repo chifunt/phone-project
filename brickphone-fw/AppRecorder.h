@@ -28,4 +28,6 @@ private:
   int16_t buffer[kMaxFrames];
   int framesRecorded = 0;
   bool recording = false;
+  bool playing = false;
+  int playIndex = 0;
 };

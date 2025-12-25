@@ -50,6 +50,14 @@ void AudioOutService::setVolume(float vol) {
   volume = vol;
 }
 
+int AudioOutService::pcmFree() const {
+  int freeFrames = 0;
+  portENTER_CRITICAL(&const_cast<AudioOutService*>(this)->pcmMux);
+  freeFrames = PCM_RING_FRAMES - pcmCount;
+  portEXIT_CRITICAL(&const_cast<AudioOutService*>(this)->pcmMux);
+  return freeFrames;
+}
+
 void AudioOutService::playToneMidi(int midi, int ms) {
   Note single = { midi, ms };
   startSequence(&single, 1);
@@ -74,14 +82,19 @@ void AudioOutService::playSfx(SfxId id) {
   }
 }
 
-void AudioOutService::playPcm(const int16_t* pcm, int frames) {
-  if (!pcm || frames <= 0) return;
+int AudioOutService::playPcm(const int16_t* pcm, int frames) {
+  if (!pcm || frames <= 0) return 0;
+  int queued = 0;
+  portENTER_CRITICAL(&pcmMux);
   for (int i = 0; i < frames; ++i) {
     if (pcmCount >= PCM_RING_FRAMES) break;
     pcmRing[pcmHead] = pcm[i];
     pcmHead = (pcmHead + 1) % PCM_RING_FRAMES;
     pcmCount++;
+    queued++;
   }
+  portEXIT_CRITICAL(&pcmMux);
+  return queued;
 }
 
 void AudioOutService::stop() {
@@ -92,9 +105,11 @@ void AudioOutService::stop() {
   currentMidi = -1;
   noteSamplesLeft = 0;
   noteTotalSamples = 0;
+  portENTER_CRITICAL(&pcmMux);
   pcmHead = 0;
   pcmTail = 0;
   pcmCount = 0;
+  portEXIT_CRITICAL(&pcmMux);
 }
 
 void AudioOutService::startSequence(const Note* seq, uint8_t len) {
@@ -159,11 +174,13 @@ void AudioOutService::renderPcmFrames(int frames) {
   static int16_t buffer[AUDIO_FRAMES * 2];
   for (int i = 0; i < frames; ++i) {
     int16_t s = 0;
+    portENTER_CRITICAL(&pcmMux);
     if (pcmCount > 0) {
       s = pcmRing[pcmTail];
       pcmTail = (pcmTail + 1) % PCM_RING_FRAMES;
       pcmCount--;
     }
+    portEXIT_CRITICAL(&pcmMux);
     buffer[2 * i] = s;
     buffer[2 * i + 1] = s;
   }

@@ -1,6 +1,6 @@
 # ESP32 Mini Console Project
 
-Small ESP32-based handheld with a 128x64 OLED, 8 Game Boy-style buttons, I2S speaker amp, and I2S microphone. Each `sketch-*` folder is a focused hardware test. The `sketch-snakegame-sampleproject` combines most features (buttons, display, audio), and the microphone test streams raw audio to a Mac via USB serial.
+Small ESP32-based handheld with a 128x64 OLED, 8 Game Boy-style buttons, I2S speaker amp, and I2S microphone. The main firmware lives in `brickphone-fw/`. Hardware bring-up and test sketches are grouped under `hardware-tests/`.
 
 ## Hardware
 - MCU: ESP32-S3 (I2S + USB serial used; adjust pins if your board differs)
@@ -50,27 +50,33 @@ All pins below are from the sketches and are easy to change in code.
 - Format: PCM16, mono
 - Goal: keep input/output aligned for future voice features (e.g., Whisper)
 
-## Sketches
-- `sketch-buttons-working/sketch-buttons-working.ino`
+## Firmware
+- `brickphone-fw/brickphone-fw.ino`
+  - Main app with splash, menu, and apps (Snake, Recorder, Voice, Settings).
+
+## Hardware Tests
+- `hardware-tests/sketch-buttons-working/sketch-buttons-working.ino`
   - Reads 8 buttons with debounce and prints presses/releases over Serial.
-- `sketch-ssd1306-working/sketch-ssd1306-working.ino`
+- `hardware-tests/sketch-ssd1306-working/sketch-ssd1306-working.ino`
   - SSD1306 bring-up and simple scrolling text.
-- `sketch-max-speaker-working/max-speaker-working.ino`
+- `hardware-tests/sketch-max-speaker-working/max-speaker-working.ino`
   - I2S audio output to MAX98357; plays a simple melody.
-- `sketch-micinmp-working/sketch-micinmp-working.ino`
-  - I2S mic input at 16 kHz; streams raw 16-bit mono PCM over Serial.
-- `sketch-snakegame-sampleproject/sketch-snakegame-sampleproject.ino`
+- `hardware-tests/sketch-micinmp-working/sketch-micinmp-working.ino`
+  - I2S mic input at 24 kHz; streams raw 16-bit mono PCM over Serial.
+- `hardware-tests/sketch-mic-to-speaker/sketch-mic-to-speaker.ino`
+  - Mic passthrough to speaker (I2S RX -> I2S TX).
+- `hardware-tests/sketch-snakegame-sampleproject/sketch-snakegame-sampleproject.ino`
   - Snake game with OLED, buttons, and I2S audio SFX. Mic not integrated yet.
 
 ## Mic Streaming to Mac
 The mic sketch outputs raw 16-bit PCM mono at 24 kHz over USB serial. `pyplayer.py` plays it live.
 
-1) Flash `sketch-micinmp-working/sketch-micinmp-working.ino`
-2) Edit `PORT` in `pyplayer.py` to match your device (ex: `/dev/cu.usbmodem101`)
+1) Flash `hardware-tests/sketch-micinmp-working/sketch-micinmp-working.ino`
+2) Edit `PORT` in `hardware-tests/pyplayer.py` to match your device (ex: `/dev/cu.usbmodem101`)
 3) Install deps (if needed):
    - `pip3 install pyserial sounddevice`
 4) Run:
-   - `./pyplayer.py`
+   - `./hardware-tests/pyplayer.py`
 
 ## Notes
 - Buttons use `INPUT_PULLUP`, so wire buttons to GND when pressed.
@@ -81,9 +87,8 @@ The mic sketch outputs raw 16-bit PCM mono at 24 kHz over USB serial. `pyplayer.
 - Boot-up sound (Nokia-style jingle) + splash animation.
 - Start screen with logo and version info.
 - Main menu with apps (Snake, Recorder, Settings).
-- Button remap and long-press shortcuts (e.g., Start = menu).
-- Settings UI (volume, brightness, mic gain).
-- Save data in NVS (high scores, last app).
+- Settings UI (volume, brightness, preset Wi-Fi selection).
+- Save data in NVS (high scores).
 - Voice recorder with waveform view + playback.
 - Wi-Fi setup/config screen (no time sync needed).
 - Refine audio (mixer, volume UI, more SFX/music).

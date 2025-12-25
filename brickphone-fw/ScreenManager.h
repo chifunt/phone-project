@@ -14,7 +14,9 @@ enum class ScreenId {
   Settings,
   Pong,
   Breakout,
-  SpaceInvaders
+  SpaceInvaders,
+  Game2048,
+  Flappy
 };
 
 class ScreenManager {
@@ -27,7 +29,7 @@ public:
   ScreenId currentId() const { return current; }
 
 private:
-  Screen* screens[9] = {};
+  Screen* screens[11] = {};
   ScreenId current = ScreenId::Splash;
   Screen* currentScreen = nullptr;
   AudioOutService* audioOut = nullptr;

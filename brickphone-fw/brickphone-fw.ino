@@ -16,6 +16,8 @@
 #include "AppPong.h"
 #include "AppBreakout.h"
 #include "AppSpaceInvaders.h"
+#include "App2048.h"
+#include "AppFlappy.h"
 
 InputService input;
 DisplayService display;
@@ -35,6 +37,8 @@ AppSettings appSettings(audioOut, net, screens);
 AppPong appPong(audioOut);
 AppBreakout appBreakout(audioOut);
 AppSpaceInvaders appSpaceInvaders(audioOut);
+App2048 app2048(audioOut);
+AppFlappy appFlappy(audioOut);
 
 unsigned long lastTickMs = 0;
 unsigned long lastDisplayMs = 0;
@@ -57,6 +61,8 @@ void setup() {
   screens.registerScreen(ScreenId::Pong, &appPong);
   screens.registerScreen(ScreenId::Breakout, &appBreakout);
   screens.registerScreen(ScreenId::SpaceInvaders, &appSpaceInvaders);
+  screens.registerScreen(ScreenId::Game2048, &app2048);
+  screens.registerScreen(ScreenId::Flappy, &appFlappy);
   screens.setAudio(&audioOut);
 
   screens.set(ScreenId::Splash);

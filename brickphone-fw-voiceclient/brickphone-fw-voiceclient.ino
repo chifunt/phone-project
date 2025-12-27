@@ -6,15 +6,29 @@
 using namespace websockets;
 
 // -------- WIFI --------
-const char* WIFI_SSID = "Mijatovic net";
-const char* WIFI_PASS = "mijatovic78";
+#include "secrets.h"
+
+#ifndef WIFI_SSID_STR
+#define WIFI_SSID_STR "YOUR_SSID"
+#endif
+
+#ifndef WIFI_PASS_STR
+#define WIFI_PASS_STR "YOUR_PASS"
+#endif
+
+const char* WIFI_SSID = WIFI_SSID_STR;
+const char* WIFI_PASS = WIFI_PASS_STR;
 
 // -------- WS --------
 // Option A (wss): use wss://<domain>/voice and configure cert if needed.
 // Option B (ws):  use ws://<ip>:<port>/voice for local testing.
 const char* WS_URL = "wss://phone-project.joshuatjhie.workers.dev/voice";
 const char* DEVICE_ID = "brick01";
-const char* AUTH_TOKEN = "YOUR_TOKEN";
+#ifndef BRICKPHONE_TOKEN
+#define BRICKPHONE_TOKEN "YOUR_TOKEN_HERE"
+#endif
+
+const char* AUTH_TOKEN = BRICKPHONE_TOKEN;
 
 // -------- BUTTON --------
 const int PIN_BTN_A = 39;

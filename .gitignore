@@ -19,3 +19,6 @@ venv/
 *.bin
 *.elf
 *.hex
+
+# Local secrets
+brickphone-fw-voiceclient/secrets.h

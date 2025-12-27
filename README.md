@@ -114,3 +114,4 @@ The mic test streams raw 16-bit PCM mono at 24 kHz over USB serial. `pyplayer.py
 - Wi-Fi preset selection UI polish and backend transport for Voice
 - Save data in NVS (high scores)
 - Audio refinements (SFX polish, mix/ducking)
+- Bad Apple video playback via external storage or dedicated data partition

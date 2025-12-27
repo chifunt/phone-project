@@ -1,11 +1,15 @@
 export interface Env {
   BRICKPHONE_TOKEN: string;
   OPENAI_API_KEY: string;
-
-  // Optional: set in your Worker env vars if you want
-  // REALTIME_MODEL?: string;
-  // ALWAYS_ON?: string; // "1" to enable always-on server VAD
 }
+
+/**
+ * Device protocol:
+ * - Client sends JSON hello/start/stop/interrupt/ping
+ * - Client sends binary frames: 12-byte header + PCM16 mono payload
+ * - Server sends JSON ready/state/pong/flow/error (+ optional assistant_text)
+ * - Server sends binary frames back: same 12-byte header + PCM16 mono payload
+ */
 
 type State = "idle" | "listening" | "thinking" | "speaking";
 
@@ -35,20 +39,13 @@ type ServerMsg =
 const MAGIC = 0xa0b1;
 const VERSION = 1;
 
-const SAMPLE_RATE = 24000;
-const FRAME_SAMPLES = 480; // 20 ms at 24 kHz
+const DEVICE_SAMPLE_RATE = 24000;
+const FRAME_SAMPLES = 480; // 20ms at 24k
 
-function getModel(env: Env) {
-  // Docs show "gpt-realtime" and pinned variants like "gpt-realtime-2025-08-25". :contentReference[oaicite:2]{index=2}
-  // If you tried "gpt-realtime-mini" and it hangs, this is the first thing to change.
-  // @ts-expect-error optional env
-  return (env.REALTIME_MODEL as string | undefined) || "gpt-realtime";
-}
-
-function getAlwaysOn(env: Env) {
-  // @ts-expect-error optional env
-  return (env.ALWAYS_ON as string | undefined) === "1";
-}
+// Pick a model you actually have access to.
+// If this is wrong or not enabled for your key, you will see it in logs now.
+const OPENAI_MODEL = "gpt-realtime";
+const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
 
 export default {
   async fetch(request: Request, env: Env) {
@@ -69,10 +66,6 @@ export default {
 function handleSession(deviceWs: WebSocket, env: Env) {
   deviceWs.accept();
 
-  const ALWAYS_ON = getAlwaysOn(env);
-  const MODEL = getModel(env);
-  const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODEL)}`;
-
   let state: State = "idle";
   let helloOk = false;
   let sessionId = crypto.randomUUID();
@@ -83,7 +76,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
   let lastActivityMs = Date.now();
 
   let idleTimer: number | null = null;
-
   let flowState: "slow" | "resume" = "resume";
   const frameWindow: { t: number; ms: number }[] = [];
 
@@ -94,7 +86,9 @@ function handleSession(deviceWs: WebSocket, env: Env) {
   let outUtteranceActive = false;
   let heldOutFrame: Int16Array | null = null;
 
-  const sendDeviceJson = (msg: ServerMsg) => deviceWs.send(JSON.stringify(msg));
+  const sendDeviceJson = (msg: ServerMsg) => {
+    deviceWs.send(JSON.stringify(msg));
+  };
 
   const setState = (next: State) => {
     state = next;
@@ -102,7 +96,10 @@ function handleSession(deviceWs: WebSocket, env: Env) {
   };
 
   const sendErrorAndClose = (code: string, message: string) => {
-    sendDeviceJson({ type: "error", code, message });
+    console.log("closing:", code, message);
+    try {
+      sendDeviceJson({ type: "error", code, message });
+    } catch {}
     try {
       deviceWs.close(1008, message);
     } catch {}
@@ -110,7 +107,7 @@ function handleSession(deviceWs: WebSocket, env: Env) {
 
   const updateFlow = (samples: number) => {
     const now = Date.now();
-    const ms = (samples / SAMPLE_RATE) * 1000;
+    const ms = (samples / DEVICE_SAMPLE_RATE) * 1000;
     frameWindow.push({ t: now, ms });
     while (frameWindow.length && now - frameWindow[0].t > 1000) frameWindow.shift();
     const sum = frameWindow.reduce((acc, cur) => acc + cur.ms, 0);
@@ -125,7 +122,9 @@ function handleSession(deviceWs: WebSocket, env: Env) {
   };
 
   idleTimer = setInterval(() => {
-    if (Date.now() - lastActivityMs > 30000) sendErrorAndClose("TIMEOUT", "idle timeout");
+    if (Date.now() - lastActivityMs > 30000) {
+      sendErrorAndClose("TIMEOUT", "idle timeout");
+    }
   }, 1000) as unknown as number;
 
   const buildDevicePcmFrame = (pcm: Int16Array, start: boolean, end: boolean) => {
@@ -150,8 +149,10 @@ function handleSession(deviceWs: WebSocket, env: Env) {
     const start = !outUtteranceActive;
     const frame = buildDevicePcmFrame(heldOutFrame, start, end);
     deviceWs.send(frame);
+
     outUtteranceActive = true;
     heldOutFrame = null;
+
     if (end) outUtteranceActive = false;
   };
 
@@ -161,7 +162,8 @@ function handleSession(deviceWs: WebSocket, env: Env) {
   };
 
   const connectOpenAI = async () => {
-    // Workers way: fetch() returns { webSocket } when using wss url. :contentReference[oaicite:3]{index=3}
+    console.log("OpenAI connect:", OPENAI_URL);
+
     const res = await fetch(OPENAI_URL, {
       headers: {
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
@@ -169,45 +171,28 @@ function handleSession(deviceWs: WebSocket, env: Env) {
       },
     });
 
-    const ws = res.webSocket;
-    if (!ws) {
-      sendErrorAndClose("INTERNAL", "openai websocket unavailable");
+    if (!res.webSocket) {
+      const body = await res.text().catch(() => "");
+      console.log("OpenAI websocket unavailable. status=", res.status, "body=", body);
+      sendErrorAndClose("OPENAI_CONNECT", `OpenAI connect failed: ${res.status}`);
       return;
     }
 
-    openaiWs = ws;
+    openaiWs = res.webSocket;
     openaiWs.accept();
     openaiReady = true;
 
-    // Current session schema uses audio.input/output with format.type audio/pcm and rate. :contentReference[oaicite:4]{index=4}
-    const turnDetection = ALWAYS_ON
-      ? {
-          type: "server_vad",
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 200,
-          create_response: true,
-          interrupt_response: true,
-        }
-      : { type: "none" };
-
+    // Ask for both audio and text so debugging is easier.
+    // Turn detection none because you are doing PTT (start/stop).
     openaiSend({
       type: "session.update",
       session: {
-        type: "realtime",
-        model: MODEL,
-        instructions: "Respond concisely and clearly.",
-        audio: {
-          input: {
-            format: { type: "audio/pcm", rate: 24000 },
-            turn_detection: turnDetection,
-          },
-          output: {
-            format: { type: "audio/pcm", rate: 24000 },
-            voice: "alloy",
-            speed: 1.0,
-          },
-        },
+        modalities: ["audio", "text"],
+        voice: "alloy",
+        input_audio_format: "pcm16",
+        output_audio_format: "pcm16",
+        turn_detection: { type: "none" },
+        input_audio_transcription: { model: "gpt-4o-transcribe" },
       },
     });
 
@@ -222,15 +207,17 @@ function handleSession(deviceWs: WebSocket, env: Env) {
         return;
       }
 
-      // Always forward OpenAI errors so you can see invalid model, auth, etc
-      if (msg.type === "error") {
-        const m = msg?.error?.message ?? msg?.message ?? "openai error";
-        sendDeviceJson({ type: "error", code: "INTERNAL", message: String(m) });
+      const t = String(msg.type ?? "");
+      if (t) console.log("OpenAI event:", t);
+
+      if (t === "error") {
+        const m = msg?.error?.message ?? "openai error";
+        sendDeviceJson({ type: "error", code: "OPENAI", message: String(m) });
         return;
       }
 
-      // These are the GA event names in the docs. :contentReference[oaicite:5]{index=5}
-      if (msg.type === "response.output_audio.delta") {
+      // Audio out (these are the events your earlier code was expecting)
+      if (t === "response.audio.delta") {
         const pcmBytes = base64ToBytes(String(msg.delta ?? ""));
         if (pcmBytes.length) {
           const samples = new Int16Array(
@@ -253,37 +240,37 @@ function handleSession(deviceWs: WebSocket, env: Env) {
         return;
       }
 
-      if (msg.type === "response.output_audio.done") {
+      if (t === "response.audio.done") {
         flushHeldOutFrame(true);
         setState("idle");
         return;
       }
 
-      if (msg.type === "response.output_text.delta") {
+      // Text out for debugging
+      if (t === "response.text.delta") {
         sendDeviceJson({ type: "assistant_text", text: String(msg.delta ?? ""), final: false });
         return;
       }
-      if (msg.type === "response.output_text.done") {
+      if (t === "response.text.done") {
         sendDeviceJson({ type: "assistant_text", text: String(msg.text ?? ""), final: true });
-        return;
-      }
-
-      if (msg.type === "input_audio_buffer.speech_started") {
-        setState("listening");
         return;
       }
     });
 
     openaiWs.addEventListener("close", () => {
+      console.log("OpenAI ws closed");
       openaiReady = false;
       openaiWs = null;
-      if (deviceWs.readyState === WebSocket.OPEN) sendErrorAndClose("INTERNAL", "openai ws closed");
+      if (deviceWs.readyState === WebSocket.OPEN) {
+        sendErrorAndClose("OPENAI_CLOSED", "OpenAI websocket closed");
+      }
     });
   };
 
   deviceWs.addEventListener("message", (event) => {
     lastActivityMs = Date.now();
 
+    // JSON control
     if (typeof event.data === "string") {
       let msg: any;
       try {
@@ -293,6 +280,7 @@ function handleSession(deviceWs: WebSocket, env: Env) {
         return;
       }
 
+      // First message must be hello
       if (!helloOk) {
         if (msg?.type !== "hello") return sendErrorAndClose("BAD_FORMAT", "expected hello");
 
@@ -301,15 +289,20 @@ function handleSession(deviceWs: WebSocket, env: Env) {
           return sendErrorAndClose("BAD_FORMAT", "invalid hello");
         }
         if (hello.auth !== env.BRICKPHONE_TOKEN) return sendErrorAndClose("AUTH_FAILED", "bad token");
-        if (hello.sample_rate !== SAMPLE_RATE) {
+        if (hello.sample_rate !== DEVICE_SAMPLE_RATE) {
           return sendErrorAndClose("UNSUPPORTED_RATE", "sample_rate must be 24000");
         }
 
         helloOk = true;
         sessionId = crypto.randomUUID();
         sessionStartMs = Date.now();
-        sendDeviceJson({ type: "ready", session_id: sessionId, sample_rate: SAMPLE_RATE });
-        connectOpenAI();
+        sendDeviceJson({ type: "ready", session_id: sessionId, sample_rate: DEVICE_SAMPLE_RATE });
+
+        // Fire and forget but do not hide failures
+        connectOpenAI().catch((e) => {
+          console.log("connectOpenAI exception:", e);
+          sendErrorAndClose("OPENAI_CONNECT", "OpenAI connect exception");
+        });
         return;
       }
 
@@ -320,7 +313,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
         return;
       }
 
-      // In ALWAYS_ON mode these are optional, but keeping them makes PTT work too
       if (control.type === "start") {
         setState("listening");
         outUtteranceActive = false;
@@ -331,7 +323,7 @@ function handleSession(deviceWs: WebSocket, env: Env) {
 
       if (control.type === "stop") {
         setState("thinking");
-        if (!ALWAYS_ON && openaiReady) {
+        if (openaiReady) {
           openaiSend({ type: "input_audio_buffer.commit" });
           openaiSend({
             type: "response.create",
@@ -340,6 +332,8 @@ function handleSession(deviceWs: WebSocket, env: Env) {
               instructions: "Respond concisely and clearly.",
             },
           });
+        } else {
+          sendDeviceJson({ type: "error", code: "OPENAI", message: "OpenAI not ready" });
         }
         return;
       }
@@ -359,6 +353,7 @@ function handleSession(deviceWs: WebSocket, env: Env) {
       return;
     }
 
+    // Binary audio frames from device
     if (event.data instanceof ArrayBuffer) {
       if (!helloOk) return sendErrorAndClose("BAD_FORMAT", "binary before hello");
 

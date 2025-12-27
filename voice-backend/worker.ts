@@ -3,6 +3,14 @@ export interface Env {
   OPENAI_API_KEY: string;
 }
 
+/**
+ * Brickphone Voice Backend
+ * - Device <-> Worker: custom WS protocol (JSON control + binary PCM frames)
+ * - Worker <-> OpenAI: Realtime WS
+ *
+ * Audio: PCM16 mono, 24 kHz only end-to-end.
+ */
+
 type State = "idle" | "listening" | "thinking" | "speaking";
 
 type HelloMsg = {
@@ -25,19 +33,24 @@ type ServerMsg =
   | { type: "pong"; t: number }
   | { type: "event"; value: "barge_in" }
   | { type: "flow"; max_buffer_ms: number; action: "slow" | "resume" }
+  | { type: "assistant_text"; text: string; final: boolean }
   | { type: "error"; code: string; message: string };
 
 const MAGIC = 0xa0b1;
 const VERSION = 1;
-const OPENAI_MODEL = "gpt-4o-realtime-preview";
+
+const SAMPLE_RATE = 24000;
+const FRAME_SAMPLES = 480; // 20ms @ 24k
+const MAX_BUFFER_MS = 400;
+
+const OPENAI_MODEL = "gpt-realtime"; // alias; you can swap to a dated variant if you want
 const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
 
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
-    if (url.pathname !== "/voice") {
-      return new Response("Not found", { status: 404 });
-    }
+
+    if (url.pathname !== "/voice") return new Response("Not found", { status: 404 });
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("Expected WebSocket", { status: 426 });
     }
@@ -45,33 +58,44 @@ export default {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
+
     handleSession(server, env);
     return new Response(null, { status: 101, webSocket: client });
   },
 };
 
-function handleSession(ws: WebSocket, env: Env) {
-  ws.accept();
+function handleSession(deviceWs: WebSocket, env: Env) {
+  deviceWs.accept();
 
   let state: State = "idle";
-  let sessionId = "";
-  let sampleRate = 24000;
   let helloOk = false;
+  let sessionId = crypto.randomUUID();
+
+  // Device stream tracking
   let clientLastSeq: number | null = null;
   let serverSeq = 0;
-  let sessionStartMs = Date.now();
+  const sessionStartMs = Date.now();
+
+  // Idle timeout
   let lastActivityMs = Date.now();
-  let idleTimer: number | null = null;
-  let ttsTimer: number | null = null;
+  const idleTimer = setInterval(() => {
+    if (Date.now() - lastActivityMs > 30000) {
+      sendErrorAndClose("TIMEOUT", "idle timeout");
+    }
+  }, 1000) as unknown as number;
+
+  // Simple flow signal based on last ~1s of received device audio
   let flowState: "slow" | "resume" = "resume";
   const frameWindow: { t: number; ms: number }[] = [];
+
+  // OpenAI realtime ws
   let openaiWs: WebSocket | null = null;
   let openaiReady = false;
-  let speaking = false;
 
-  const sendJson = (msg: ServerMsg) => {
-    ws.send(JSON.stringify(msg));
-  };
+  // Outbound (to device) speech framing
+  let outSpeechActive = false; // whether we already sent START_OF_UTTERANCE for current assistant speech
+
+  const sendJson = (msg: ServerMsg) => deviceWs.send(JSON.stringify(msg));
 
   const setState = (next: State) => {
     state = next;
@@ -79,60 +103,33 @@ function handleSession(ws: WebSocket, env: Env) {
   };
 
   const sendErrorAndClose = (code: string, message: string) => {
-    sendJson({ type: "error", code, message });
-    ws.close(1008, message);
-  };
-
-  const stopTts = () => {
-    if (ttsTimer !== null) {
-      clearTimeout(ttsTimer);
-      ttsTimer = null;
-    }
-  };
-
-  const buildPcmFrame = (pcm: Int16Array, start: boolean, end: boolean) => {
-    const header = new ArrayBuffer(12);
-    const view = new DataView(header);
-    const flags = (start ? 1 : 0) | (end ? 2 : 0);
-    const samples = pcm.length;
-    view.setUint16(0, MAGIC, true);
-    view.setUint8(2, VERSION);
-    view.setUint8(3, flags);
-    view.setUint16(4, serverSeq, true);
-    view.setUint16(6, samples, true);
-    view.setUint32(8, Date.now() - sessionStartMs, true);
-    serverSeq = (serverSeq + 1) & 0xffff;
-
-    const payload = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength);
-    return concatBuffers(header, payload);
+    try {
+      sendJson({ type: "error", code, message });
+    } catch {}
+    try {
+      deviceWs.close(1008, message);
+    } catch {}
   };
 
   const updateFlow = (samples: number) => {
     const now = Date.now();
-    const ms = (samples / sampleRate) * 1000;
+    const ms = (samples / SAMPLE_RATE) * 1000;
     frameWindow.push({ t: now, ms });
-    while (frameWindow.length && now - frameWindow[0].t > 1000) {
-      frameWindow.shift();
-    }
+    while (frameWindow.length && now - frameWindow[0].t > 1000) frameWindow.shift();
+
     const sum = frameWindow.reduce((acc, cur) => acc + cur.ms, 0);
-    if (sum > 400 && flowState !== "slow") {
+    if (sum > MAX_BUFFER_MS && flowState !== "slow") {
       flowState = "slow";
-      sendJson({ type: "flow", max_buffer_ms: 400, action: "slow" });
+      sendJson({ type: "flow", max_buffer_ms: MAX_BUFFER_MS, action: "slow" });
     } else if (sum < 200 && flowState !== "resume") {
       flowState = "resume";
-      sendJson({ type: "flow", max_buffer_ms: 400, action: "resume" });
+      sendJson({ type: "flow", max_buffer_ms: MAX_BUFFER_MS, action: "resume" });
     }
   };
 
-  idleTimer = setInterval(() => {
-    if (Date.now() - lastActivityMs > 30000) {
-      sendErrorAndClose("TIMEOUT", "idle timeout");
-    }
-  }, 1000) as unknown as number;
-
-  const openaiSend = (msg: unknown) => {
+  const openaiSend = (obj: unknown) => {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    openaiWs.send(JSON.stringify(msg));
+    openaiWs.send(JSON.stringify(obj));
   };
 
   const connectOpenAI = async () => {
@@ -142,83 +139,135 @@ function handleSession(ws: WebSocket, env: Env) {
         "OpenAI-Beta": "realtime=v1",
       },
     });
-    const wsOpenAI = res.webSocket;
-    if (!wsOpenAI) {
-      sendErrorAndClose("INTERNAL", "openai ws failed");
+
+    const ws = res.webSocket;
+    if (!ws) {
+      sendErrorAndClose("INTERNAL", "openai websocket not available");
       return;
     }
-    openaiWs = wsOpenAI;
+
+    openaiWs = ws;
     openaiWs.accept();
     openaiReady = true;
 
+    // Configure session: 24k PCM16 in/out, no server VAD (device uses PTT start/stop)
     openaiSend({
       type: "session.update",
       session: {
         input_audio_format: "pcm16",
         output_audio_format: "pcm16",
-        input_audio_transcription: { model: "gpt-4o-transcribe" },
         turn_detection: { type: "none" },
         voice: "alloy",
       },
     });
 
     openaiWs.addEventListener("message", (evt) => {
-      const data = typeof evt.data === "string" ? evt.data : "";
-      if (!data) return;
+      const text = typeof evt.data === "string" ? evt.data : "";
+      if (!text) return;
+
       let msg: any;
       try {
-        msg = JSON.parse(data);
+        msg = JSON.parse(text);
       } catch {
         return;
       }
 
-      if (msg.type === "response.audio.delta") {
+      // Audio out from model
+      if (msg.type === "response.audio.delta" && typeof msg.delta === "string") {
         const pcmBytes = base64ToBytes(msg.delta);
-        streamPcmToClient(pcmBytes);
-        if (!speaking) {
-          speaking = true;
-          setState("speaking");
-        }
-      } else if (msg.type === "response.audio.done") {
-        speaking = false;
-        setState("idle");
-      } else if (msg.type === "response.text.delta") {
+        streamPcmToDevice(pcmBytes);
+        if (state !== "speaking") setState("speaking");
+        return;
+      }
+
+      if (msg.type === "response.audio.done") {
+        endAssistantUtterance();
+        if (state !== "idle") setState("idle");
+        return;
+      }
+
+      // Text out from model (optional)
+      if (msg.type === "response.text.delta" && typeof msg.delta === "string") {
         sendJson({ type: "assistant_text", text: msg.delta, final: false });
-      } else if (msg.type === "response.text.done") {
-        sendJson({ type: "assistant_text", text: msg.text ?? "", final: true });
-      } else if (msg.type === "input_audio_buffer.speech_started") {
-        setState("listening");
+        return;
+      }
+
+      if (msg.type === "response.text.done") {
+        // Some variants include final text in different fields, so keep it conservative.
+        const finalText = typeof msg.text === "string" ? msg.text : "";
+        sendJson({ type: "assistant_text", text: finalText, final: true });
+        return;
       }
     });
 
     openaiWs.addEventListener("close", () => {
       openaiReady = false;
       openaiWs = null;
-      if (ws.readyState === WebSocket.OPEN) {
+      if (deviceWs.readyState === WebSocket.OPEN) {
         sendErrorAndClose("INTERNAL", "openai ws closed");
       }
     });
   };
 
-  const streamPcmToClient = (pcmBytes: Uint8Array) => {
+  const buildDeviceFrame = (pcm: Int16Array, start: boolean, end: boolean) => {
+    const header = new ArrayBuffer(12);
+    const view = new DataView(header);
+
+    const flags = (start ? 1 : 0) | (end ? 2 : 0);
+
+    view.setUint16(0, MAGIC, true);
+    view.setUint8(2, VERSION);
+    view.setUint8(3, flags);
+    view.setUint16(4, serverSeq, true);
+    view.setUint16(6, pcm.length, true);
+    view.setUint32(8, Date.now() - sessionStartMs, true);
+
+    serverSeq = (serverSeq + 1) & 0xffff;
+
+    const payload = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength);
+    return concatBuffers(header, payload);
+  };
+
+  const streamPcmToDevice = (pcmBytes: Uint8Array) => {
+    // Chunk into 20ms frames for the ESP32
     const totalSamples = Math.floor(pcmBytes.length / 2);
-    let sampleOffset = 0;
-    while (sampleOffset < totalSamples) {
-      const frameSamples = Math.min(480, totalSamples - sampleOffset);
-      const start = sampleOffset === 0;
-      const end = sampleOffset + frameSamples >= totalSamples;
-      const pcm = new Int16Array(pcmBytes.buffer.slice(
-        pcmBytes.byteOffset + sampleOffset * 2,
-        pcmBytes.byteOffset + (sampleOffset + frameSamples) * 2
-      ));
-      const frame = buildPcmFrame(pcm, start, end);
-      ws.send(frame);
-      sampleOffset += frameSamples;
+    let off = 0;
+
+    while (off < totalSamples) {
+      const n = Math.min(FRAME_SAMPLES, totalSamples - off);
+      const start = !outSpeechActive && off === 0;
+      const end = false;
+
+      const slice = pcmBytes.buffer.slice(
+        pcmBytes.byteOffset + off * 2,
+        pcmBytes.byteOffset + (off + n) * 2
+      );
+      const pcm = new Int16Array(slice);
+
+      const frame = buildDeviceFrame(pcm, start, end);
+      deviceWs.send(frame);
+
+      outSpeechActive = true;
+      off += n;
     }
   };
 
-  ws.addEventListener("message", (event) => {
+  const endAssistantUtterance = () => {
+    if (!outSpeechActive) return;
+
+    // Send explicit END frame with 0 samples
+    const empty = new Int16Array(0);
+    const frame = buildDeviceFrame(empty, false, true);
+    deviceWs.send(frame);
+
+    outSpeechActive = false;
+  };
+
+  // Device WS handler
+  deviceWs.addEventListener("message", (event) => {
     lastActivityMs = Date.now();
+
+    // JSON control messages
     if (typeof event.data === "string") {
       let msg: any;
       try {
@@ -228,13 +277,15 @@ function handleSession(ws: WebSocket, env: Env) {
         return;
       }
 
+      // Handshake
       if (!helloOk) {
         if (msg?.type !== "hello") {
           sendErrorAndClose("BAD_FORMAT", "expected hello");
           return;
         }
         const hello = msg as HelloMsg;
-        if (!hello.device_id || !hello.auth || !hello.sample_rate || hello.channels !== 1) {
+
+        if (!hello.device_id || !hello.auth || hello.channels !== 1) {
           sendErrorAndClose("BAD_FORMAT", "invalid hello");
           return;
         }
@@ -242,35 +293,36 @@ function handleSession(ws: WebSocket, env: Env) {
           sendErrorAndClose("AUTH_FAILED", "invalid token");
           return;
         }
-        if (hello.sample_rate !== 24000) {
-          sendErrorAndClose("UNSUPPORTED_RATE", "unsupported sample rate");
+        if (hello.sample_rate !== SAMPLE_RATE) {
+          sendErrorAndClose("UNSUPPORTED_RATE", "sample_rate must be 24000");
           return;
         }
+
         helloOk = true;
-        sampleRate = 24000;
         sessionId = crypto.randomUUID();
-        sessionStartMs = Date.now();
-        sendJson({ type: "ready", session_id: sessionId, sample_rate: 24000 });
+        sendJson({ type: "ready", session_id: sessionId, sample_rate: SAMPLE_RATE });
+
+        // Connect upstream only after auth is good
         connectOpenAI();
         return;
       }
 
       const control = msg as ControlMsg;
+
       if (control.type === "ping") {
         sendJson({ type: "pong", t: control.t });
         return;
       }
+
       if (control.type === "start") {
-        stopTts();
+        endAssistantUtterance(); // stop any leftover audio framing
         setState("listening");
-        if (openaiReady) {
-          openaiSend({ type: "input_audio_buffer.clear" });
-        }
+        if (openaiReady) openaiSend({ type: "input_audio_buffer.clear" });
         return;
       }
+
       if (control.type === "stop") {
         setState("thinking");
-        stopTts();
         if (openaiReady) {
           openaiSend({ type: "input_audio_buffer.commit" });
           openaiSend({
@@ -283,8 +335,10 @@ function handleSession(ws: WebSocket, env: Env) {
         }
         return;
       }
+
       if (control.type === "interrupt") {
-        stopTts();
+        // Barge in: stop TTS immediately
+        endAssistantUtterance();
         setState("listening");
         sendJson({ type: "event", value: "barge_in" });
         if (openaiReady) {
@@ -293,53 +347,69 @@ function handleSession(ws: WebSocket, env: Env) {
         }
         return;
       }
-    } else if (event.data instanceof ArrayBuffer) {
-      if (!helloOk) {
-        sendErrorAndClose("BAD_FORMAT", "binary before hello");
-        return;
-      }
-      const buf = event.data;
-      if (buf.byteLength < 12) {
-        sendErrorAndClose("BAD_FORMAT", "short frame");
-        return;
-      }
-      const view = new DataView(buf);
-      const magic = view.getUint16(0, true);
-      const version = view.getUint8(2);
-      const seq = view.getUint16(4, true);
-      const samples = view.getUint16(6, true);
-      const expectedLen = 12 + samples * 2;
-      if (magic !== MAGIC || version !== VERSION || expectedLen !== buf.byteLength) {
-        sendErrorAndClose("BAD_FORMAT", "invalid frame");
-        return;
-      }
-      if (clientLastSeq !== null) {
-        const expected = (clientLastSeq + 1) & 0xffff;
-        if (seq !== expected) {
-          sendJson({ type: "error", code: "BAD_FORMAT", message: "seq gap" });
-        }
-      }
-      clientLastSeq = seq;
-      updateFlow(samples);
-      if (openaiReady) {
-        const payload = new Uint8Array(buf.slice(12));
-        openaiSend({
-          type: "input_audio_buffer.append",
-          audio: bytesToBase64(payload),
-        });
-      }
-    } else {
+
+      // Unknown control
+      return;
+    }
+
+    // Binary audio frames from device
+    if (!(event.data instanceof ArrayBuffer)) {
       sendErrorAndClose("BAD_FORMAT", "unsupported frame");
+      return;
+    }
+    if (!helloOk) {
+      sendErrorAndClose("BAD_FORMAT", "binary before hello");
+      return;
+    }
+
+    const buf = event.data;
+    if (buf.byteLength < 12) {
+      sendErrorAndClose("BAD_FORMAT", "short frame");
+      return;
+    }
+
+    const view = new DataView(buf);
+    const magic = view.getUint16(0, true);
+    const version = view.getUint8(2);
+    const seq = view.getUint16(4, true);
+    const samples = view.getUint16(6, true);
+
+    const expectedLen = 12 + samples * 2;
+    if (magic !== MAGIC || version !== VERSION || expectedLen !== buf.byteLength) {
+      sendErrorAndClose("BAD_FORMAT", "invalid frame");
+      return;
+    }
+
+    if (clientLastSeq !== null) {
+      const expected = (clientLastSeq + 1) & 0xffff;
+      if (seq !== expected) {
+        // warn but continue
+        sendJson({ type: "error", code: "BAD_SEQ", message: "seq gap" });
+      }
+    }
+    clientLastSeq = seq;
+
+    updateFlow(samples);
+
+    if (openaiReady) {
+      const payload = new Uint8Array(buf.slice(12));
+      openaiSend({
+        type: "input_audio_buffer.append",
+        audio: bytesToBase64(payload),
+      });
     }
   });
 
-  ws.addEventListener("close", () => {
-    if (idleTimer !== null) clearInterval(idleTimer);
-    stopTts();
-    if (openaiWs) {
-      openaiWs.close();
-      openaiWs = null;
-    }
+  deviceWs.addEventListener("close", () => {
+    try {
+      if (idleTimer !== null) clearInterval(idleTimer);
+    } catch {}
+
+    try {
+      if (openaiWs) openaiWs.close();
+    } catch {}
+    openaiWs = null;
+    openaiReady = false;
   });
 }
 
@@ -350,10 +420,13 @@ function concatBuffers(a: ArrayBuffer, b: ArrayBuffer) {
   return out.buffer;
 }
 
+// Safer base64 helpers for Workers (avoid huge spread ops)
 function bytesToBase64(bytes: Uint8Array) {
+  const chunkSize = 0x8000;
   let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    for (let j = 0; j < chunk.length; j++) binary += String.fromCharCode(chunk[j]);
   }
   return btoa(binary);
 }
@@ -361,8 +434,6 @@ function bytesToBase64(bytes: Uint8Array) {
 function base64ToBytes(b64: string) {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) {
-    out[i] = bin.charCodeAt(i);
-  }
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }

@@ -6,13 +6,13 @@
 using namespace websockets;
 
 // -------- WIFI --------
-const char* WIFI_SSID = "YOUR_SSID";
-const char* WIFI_PASS = "YOUR_PASS";
+const char* WIFI_SSID = "Mijatovic net";
+const char* WIFI_PASS = "mijatovic78";
 
 // -------- WS --------
 // Option A (wss): use wss://<domain>/voice and configure cert if needed.
 // Option B (ws):  use ws://<ip>:<port>/voice for local testing.
-const char* WS_URL = "wss://your-domain/voice";
+const char* WS_URL = "wss://phone-project.joshuatjhie.workers.dev/voice";
 const char* DEVICE_ID = "brick01";
 const char* AUTH_TOKEN = "YOUR_TOKEN";
 

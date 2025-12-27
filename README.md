@@ -1,18 +1,57 @@
-# ESP32 Mini Console Project
+# Brickphone Firmware
 
-Small ESP32-based handheld with a 128x64 OLED, 8 Game Boy-style buttons, I2S speaker amp, and I2S microphone. The main firmware lives in `brickphone-fw/`. Hardware bring-up and test sketches are grouped under `hardware-tests/`.
+ESP32-S3 handheld with a 128x64 SSD1306 OLED, 8 Game Boy-style buttons, I2S speaker amp, and I2S microphone. This repo contains the main firmware plus hardware bring-up tests.
+
+## Firmware Layout
+- `brickphone-fw/brickphone-fw.ino` — main firmware entry
+- `brickphone-fw/` — services, screen framework, and apps
+- `hardware-tests/` — focused sketches for individual hardware tests
+
+## Arduino IDE Settings
+- Board: ESP32S3 Dev Module
+- USB CDC On Boot: Enabled
+- Flash Size: 16MB
+
+## Apps (Current)
+Order reflects the in-device menu.
+- Voice (backend placeholder)
+- Recorder
+- Snake
+- Pong
+- Breakout
+- Space Invaders
+- 2048
+- Flappy Bird
+- Settings
+
+## Controls
+Global:
+- START: return to menu
+- A: confirm / primary
+- B: back / secondary
+- SELECT: app-specific
+- D-Pad: navigate
+
+Per-app:
+- Snake: A sound toggle, SELECT speed toggle, B reset
+- Recorder: A record, B play, SELECT clear
+- Voice: hold A to talk (backend placeholder)
+- Pong: A pause, B reset, UP/DOWN move
+- Breakout: A launch, B reset, LEFT/RIGHT move
+- Space Invaders: A shoot, B reset, LEFT/RIGHT move
+- 2048: D-Pad move, A reset
+- Flappy: A flap / retry
+- Settings: UP/DOWN volume, LEFT/RIGHT Wi-Fi preset, SELECT connect, A mute, B back
 
 ## Hardware
-- MCU: ESP32-S3 (I2S + USB serial used; adjust pins if your board differs)
+- MCU: ESP32-S3
 - Display: 128x64 SSD1306 OLED over I2C
 - Speaker amp: MAX98357 I2S DAC/amp
 - Mic: I2S mic (tested with INMP441-style wiring)
 - Buttons: 8 inputs, Game Boy layout
 
 ## Pin Map
-All pins below are from the sketches and are easy to change in code.
-
-### Buttons (with INPUT_PULLUP)
+Buttons (INPUT_PULLUP, pressed = LOW):
 - RIGHT: GPIO 35
 - UP: GPIO 36
 - DOWN: GPIO 37
@@ -22,22 +61,27 @@ All pins below are from the sketches and are easy to change in code.
 - SELECT: GPIO 41
 - START: GPIO 42
 
-### OLED (SSD1306, I2C)
+OLED (SSD1306, I2C):
 - SDA: GPIO 4
 - SCL: GPIO 5
-- Address: 0x3C (fallback to 0x3D in test sketch)
+- Address: 0x3C (fallback 0x3D in tests)
 
-### Speaker (MAX98357, I2S TX @ 24 kHz)
+Speaker (MAX98357, I2S TX @ 24 kHz):
 - DIN: GPIO 9
 - BCLK: GPIO 10
 - LRC/WS: GPIO 11
 
-### Microphone (I2S RX @ 24 kHz)
-- SD (data out from mic): GPIO 16
+Microphone (I2S RX @ 24 kHz):
+- SD: GPIO 16
 - BCLK: GPIO 17
 - WS/LRCL: GPIO 18
 
-## Libraries and Frameworks
+## Audio Standard
+- Sample rate: 24 kHz
+- Format: PCM16, mono
+- Goal: keep input/output aligned for future voice features
+
+## Libraries
 - Arduino core for ESP32
 - `Wire` (I2C)
 - `Adafruit_GFX`
@@ -45,51 +89,28 @@ All pins below are from the sketches and are easy to change in code.
 - ESP-IDF I2S driver: `driver/i2s.h`
 - Python (Mac audio playback): `pyserial`, `sounddevice`
 
-## Audio Standard
-- Sample rate: 24 kHz
-- Format: PCM16, mono
-- Goal: keep input/output aligned for future voice features (e.g., Whisper)
-
-## Firmware
-- `brickphone-fw/brickphone-fw.ino`
-  - Main app with splash, menu, and apps (Snake, Recorder, Voice, Settings).
-
 ## Hardware Tests
 - `hardware-tests/sketch-buttons-working/sketch-buttons-working.ino`
-  - Reads 8 buttons with debounce and prints presses/releases over Serial.
 - `hardware-tests/sketch-ssd1306-working/sketch-ssd1306-working.ino`
-  - SSD1306 bring-up and simple scrolling text.
 - `hardware-tests/sketch-max-speaker-working/max-speaker-working.ino`
-  - I2S audio output to MAX98357; plays a simple melody.
 - `hardware-tests/sketch-micinmp-working/sketch-micinmp-working.ino`
-  - I2S mic input at 24 kHz; streams raw 16-bit mono PCM over Serial.
 - `hardware-tests/sketch-mic-to-speaker/sketch-mic-to-speaker.ino`
-  - Mic passthrough to speaker (I2S RX -> I2S TX).
 - `hardware-tests/sketch-snakegame-sampleproject/sketch-snakegame-sampleproject.ino`
-  - Snake game with OLED, buttons, and I2S audio SFX. Mic not integrated yet.
 
 ## Mic Streaming to Mac
-The mic sketch outputs raw 16-bit PCM mono at 24 kHz over USB serial. `pyplayer.py` plays it live.
+The mic test streams raw 16-bit PCM mono at 24 kHz over USB serial. `pyplayer.py` plays it live.
 
 1) Flash `hardware-tests/sketch-micinmp-working/sketch-micinmp-working.ino`
-2) Edit `PORT` in `hardware-tests/pyplayer.py` to match your device (ex: `/dev/cu.usbmodem101`)
-3) Install deps (if needed):
-   - `pip3 install pyserial sounddevice`
-4) Run:
-   - `./hardware-tests/pyplayer.py`
+2) Edit `PORT` in `hardware-tests/pyplayer.py`
+3) Install deps (if needed): `pip3 install pyserial sounddevice`
+4) Run: `./hardware-tests/pyplayer.py`
 
 ## Notes
-- Buttons use `INPUT_PULLUP`, so wire buttons to GND when pressed.
-- MAX98357 SD pin should be tied to 3V3 to keep it enabled.
-- If you change pins, update them in each sketch to match your wiring.
+- Buttons use `INPUT_PULLUP` (wire to GND when pressed).
+- MAX98357 SD pin should be tied to 3V3.
+- If you change pins, update them in `brickphone-fw/Pins.h`.
 
 ## Roadmap
-- Boot-up sound (Nokia-style jingle) + splash animation.
-- Start screen with logo and version info.
-- Main menu with apps (Snake, Recorder, Settings).
-- Settings UI (volume, brightness, preset Wi-Fi selection).
-- Save data in NVS (high scores).
-- Voice recorder with waveform view + playback.
-- Wi-Fi setup/config screen (no time sync needed).
-- Refine audio (mixer, volume UI, more SFX/music).
-- Add more games (Pong, Breakout, or small UI demos).
+- Wi-Fi preset selection UI polish and backend transport for Voice
+- Save data in NVS (high scores)
+- Audio refinements (SFX polish, mix/ducking)

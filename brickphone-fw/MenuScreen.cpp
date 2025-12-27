@@ -5,14 +5,14 @@
 
 static const MenuScreen::Entry kEntries[] = {
   { "Voice",   ICON_VOICE_16X16,   ScreenId::Voice },
-  { "Snake",   ICON_SNAKE_16X16,   ScreenId::Snake },
   { "Recorder", ICON_REC_16X16,    ScreenId::Recorder },
-  { "Settings", ICON_SETTINGS_16X16, ScreenId::Settings },
+  { "Snake",   ICON_SNAKE_16X16,   ScreenId::Snake },
   { "Pong", ICON_PONG_16X16, ScreenId::Pong },
   { "Breakout", ICON_BREAKOUT_16X16, ScreenId::Breakout },
   { "Invaders", ICON_INVADERS_16X16, ScreenId::SpaceInvaders },
   { "2048", ICON_2048_16X16, ScreenId::Game2048 },
-  { "Flappy", ICON_FLAPPY_16X16, ScreenId::Flappy }
+  { "Flappy", ICON_FLAPPY_16X16, ScreenId::Flappy },
+  { "Settings", ICON_SETTINGS_16X16, ScreenId::Settings }
 };
 
 static const uint8_t kEntryCount = sizeof(kEntries) / sizeof(kEntries[0]);

@@ -1,6 +1,10 @@
 export interface Env {
   BRICKPHONE_TOKEN: string;
   OPENAI_API_KEY: string;
+
+  // Optional: set in your Worker env vars if you want
+  // REALTIME_MODEL?: string;
+  // ALWAYS_ON?: string; // "1" to enable always-on server VAD
 }
 
 type State = "idle" | "listening" | "thinking" | "speaking";
@@ -31,13 +35,20 @@ type ServerMsg =
 const MAGIC = 0xa0b1;
 const VERSION = 1;
 
-// Device audio framing
 const SAMPLE_RATE = 24000;
-const FRAME_SAMPLES = 480; // 20ms @ 24kHz
+const FRAME_SAMPLES = 480; // 20 ms at 24 kHz
 
-// OpenAI Realtime
-const OPENAI_MODEL = "gpt-realtime-mini";
-const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
+function getModel(env: Env) {
+  // Docs show "gpt-realtime" and pinned variants like "gpt-realtime-2025-08-25". :contentReference[oaicite:2]{index=2}
+  // If you tried "gpt-realtime-mini" and it hangs, this is the first thing to change.
+  // @ts-expect-error optional env
+  return (env.REALTIME_MODEL as string | undefined) || "gpt-realtime";
+}
+
+function getAlwaysOn(env: Env) {
+  // @ts-expect-error optional env
+  return (env.ALWAYS_ON as string | undefined) === "1";
+}
 
 export default {
   async fetch(request: Request, env: Env) {
@@ -58,6 +69,10 @@ export default {
 function handleSession(deviceWs: WebSocket, env: Env) {
   deviceWs.accept();
 
+  const ALWAYS_ON = getAlwaysOn(env);
+  const MODEL = getModel(env);
+  const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODEL)}`;
+
   let state: State = "idle";
   let helloOk = false;
   let sessionId = crypto.randomUUID();
@@ -68,13 +83,14 @@ function handleSession(deviceWs: WebSocket, env: Env) {
   let lastActivityMs = Date.now();
 
   let idleTimer: number | null = null;
+
   let flowState: "slow" | "resume" = "resume";
   const frameWindow: { t: number; ms: number }[] = [];
 
   let openaiWs: WebSocket | null = null;
   let openaiReady = false;
 
-  // Output audio handling: one frame lookahead so END is never sent as empty frame
+  // Output audio: one-frame lookahead so END is never an empty frame
   let outUtteranceActive = false;
   let heldOutFrame: Int16Array | null = null;
 
@@ -145,6 +161,7 @@ function handleSession(deviceWs: WebSocket, env: Env) {
   };
 
   const connectOpenAI = async () => {
+    // Workers way: fetch() returns { webSocket } when using wss url. :contentReference[oaicite:3]{index=3}
     const res = await fetch(OPENAI_URL, {
       headers: {
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
@@ -162,14 +179,35 @@ function handleSession(deviceWs: WebSocket, env: Env) {
     openaiWs.accept();
     openaiReady = true;
 
-    // Configure session: pcm16 in/out, no server VAD because you do PTT
+    // Current session schema uses audio.input/output with format.type audio/pcm and rate. :contentReference[oaicite:4]{index=4}
+    const turnDetection = ALWAYS_ON
+      ? {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 200,
+          create_response: true,
+          interrupt_response: true,
+        }
+      : { type: "none" };
+
     openaiSend({
       type: "session.update",
       session: {
-        input_audio_format: "pcm16",
-        output_audio_format: "pcm16",
-        turn_detection: { type: "none" },
-        voice: "alloy",
+        type: "realtime",
+        model: MODEL,
+        instructions: "Respond concisely and clearly.",
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: 24000 },
+            turn_detection: turnDetection,
+          },
+          output: {
+            format: { type: "audio/pcm", rate: 24000 },
+            voice: "alloy",
+            speed: 1.0,
+          },
+        },
       },
     });
 
@@ -184,33 +222,29 @@ function handleSession(deviceWs: WebSocket, env: Env) {
         return;
       }
 
-      // Forward OpenAI errors
+      // Always forward OpenAI errors so you can see invalid model, auth, etc
       if (msg.type === "error") {
-        const m = msg?.error?.message ?? "openai error";
+        const m = msg?.error?.message ?? msg?.message ?? "openai error";
         sendDeviceJson({ type: "error", code: "INTERNAL", message: String(m) });
         return;
       }
 
-      // Audio out
+      // These are the GA event names in the docs. :contentReference[oaicite:5]{index=5}
       if (msg.type === "response.output_audio.delta") {
         const pcmBytes = base64ToBytes(String(msg.delta ?? ""));
         if (pcmBytes.length) {
-          // Convert bytes to Int16 samples
           const samples = new Int16Array(
             pcmBytes.buffer.slice(pcmBytes.byteOffset, pcmBytes.byteOffset + pcmBytes.byteLength)
           );
 
-          // Chunk into 480-sample frames, keep one-frame lookahead
           let i = 0;
           while (i < samples.length) {
             const take = Math.min(FRAME_SAMPLES, samples.length - i);
             const chunk = samples.subarray(i, i + take);
 
-            // If we already hold a frame, flush it as not-end because we now have a next frame
             if (heldOutFrame) flushHeldOutFrame(false);
-
-            // Hold current chunk (even if short) until we know if it is last
             heldOutFrame = new Int16Array(chunk);
+
             i += take;
           }
 
@@ -220,13 +254,11 @@ function handleSession(deviceWs: WebSocket, env: Env) {
       }
 
       if (msg.type === "response.output_audio.done") {
-        // Mark END on the last real frame we held
         flushHeldOutFrame(true);
         setState("idle");
         return;
       }
 
-      // Text out (optional)
       if (msg.type === "response.output_text.delta") {
         sendDeviceJson({ type: "assistant_text", text: String(msg.delta ?? ""), final: false });
         return;
@@ -236,7 +268,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
         return;
       }
 
-      // Useful state hints
       if (msg.type === "input_audio_buffer.speech_started") {
         setState("listening");
         return;
@@ -250,7 +281,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
     });
   };
 
-  // Device inbound
   deviceWs.addEventListener("message", (event) => {
     lastActivityMs = Date.now();
 
@@ -263,7 +293,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
         return;
       }
 
-      // First message must be hello
       if (!helloOk) {
         if (msg?.type !== "hello") return sendErrorAndClose("BAD_FORMAT", "expected hello");
 
@@ -291,6 +320,7 @@ function handleSession(deviceWs: WebSocket, env: Env) {
         return;
       }
 
+      // In ALWAYS_ON mode these are optional, but keeping them makes PTT work too
       if (control.type === "start") {
         setState("listening");
         outUtteranceActive = false;
@@ -301,7 +331,7 @@ function handleSession(deviceWs: WebSocket, env: Env) {
 
       if (control.type === "stop") {
         setState("thinking");
-        if (openaiReady) {
+        if (!ALWAYS_ON && openaiReady) {
           openaiSend({ type: "input_audio_buffer.commit" });
           openaiSend({
             type: "response.create",
@@ -329,7 +359,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
       return;
     }
 
-    // Binary audio frames from device
     if (event.data instanceof ArrayBuffer) {
       if (!helloOk) return sendErrorAndClose("BAD_FORMAT", "binary before hello");
 
@@ -350,7 +379,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
       if (clientLastSeq !== null) {
         const expected = (clientLastSeq + 1) & 0xffff;
         if (seq !== expected) {
-          // Keep going, but flag it
           sendDeviceJson({ type: "error", code: "BAD_FORMAT", message: "seq gap" });
         }
       }
@@ -386,7 +414,6 @@ function concatBuffers(a: ArrayBuffer, b: ArrayBuffer) {
   return out.buffer;
 }
 
-// Worker-safe base64 helpers
 function bytesToBase64(bytes: Uint8Array) {
   const chunkSize = 0x8000;
   let binary = "";

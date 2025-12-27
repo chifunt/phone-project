@@ -45,7 +45,7 @@ const FRAME_SAMPLES = 480; // 20ms at 24k
 // Pick a model you actually have access to.
 // If this is wrong or not enabled for your key, you will see it in logs now.
 const OPENAI_MODEL = "gpt-realtime";
-const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
+const OPENAI_URL = `https://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
 
 export default {
   async fetch(request: Request, env: Env) {
@@ -300,8 +300,9 @@ function handleSession(deviceWs: WebSocket, env: Env) {
 
         // Fire and forget but do not hide failures
         connectOpenAI().catch((e) => {
-          console.log("connectOpenAI exception:", e);
-          sendErrorAndClose("OPENAI_CONNECT", "OpenAI connect exception");
+          const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+          console.log("connectOpenAI exception:", msg);
+          sendErrorAndClose("OPENAI_CONNECT", msg);
         });
         return;
       }

@@ -80,7 +80,7 @@ function handleSession(ws: WebSocket, env: Env) {
   const startTts = () => {
     stopTts();
     setState("speaking");
-    const frames = 10;
+    const frames = 30;
     const samples = Math.floor(sampleRate / 50);
     let phase = 0;
     const phaseStep = (2 * Math.PI * 440) / sampleRate;
@@ -89,7 +89,7 @@ function handleSession(ws: WebSocket, env: Env) {
       const isEnd = i === frames - 1;
       const pcm = new Int16Array(samples);
       for (let s = 0; s < samples; s++) {
-        pcm[s] = Math.floor(Math.sin(phase) * 4000);
+        pcm[s] = Math.floor(Math.sin(phase) * 12000);
         phase += phaseStep;
         if (phase > Math.PI * 2) phase -= Math.PI * 2;
       }

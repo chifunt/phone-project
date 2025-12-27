@@ -1,9 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <ArduinoWebsockets.h>
+#include <WebSocketsClient.h>
 #include "driver/i2s.h"
-
-using namespace websockets;
 
 // -------- WIFI --------
 #include "secrets.h"
@@ -20,9 +18,10 @@ const char* WIFI_SSID = WIFI_SSID_STR;
 const char* WIFI_PASS = WIFI_PASS_STR;
 
 // -------- WS --------
-// Option A (wss): use wss://<domain>/voice and configure cert if needed.
-// Option B (ws):  use ws://<ip>:<port>/voice for local testing.
-const char* WS_URL = "wss://phone-project.joshuatjhie.workers.dev/voice";
+#define SKIP_I2S_FOR_DEBUG 0
+
+const char* WS_HOST = "phone-project.joshuatjhie.workers.dev";
+const char* WS_PATH = "/voice";
 const char* DEVICE_ID = "brick01";
 #ifndef BRICKPHONE_TOKEN
 #define BRICKPHONE_TOKEN "YOUR_TOKEN_HERE"
@@ -50,7 +49,7 @@ const int PIN_BTN_A = 39;
 #define FRAME_SAMPLES 480   // 20 ms @ 24 kHz
 #define FRAME_BYTES (FRAME_SAMPLES * 2)
 
-WebsocketsClient ws;
+WebSocketsClient ws;
 bool wsReady = false;
 bool streaming = false;
 bool startPending = false;
@@ -62,13 +61,22 @@ const unsigned long PING_INTERVAL_MS = 12000;
 static int32_t micIn32[FRAME_SAMPLES];
 static int16_t micPcm16[FRAME_SAMPLES];
 static uint8_t txFrame[12 + FRAME_BYTES];
+static int16_t outStereo[FRAME_SAMPLES * 2];
+static int16_t beepBuf[FRAME_SAMPLES * 2];
 
 void wifi_connect() {
+  Serial.println("WiFi: connecting...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) {
     delay(200);
+    Serial.print(".");
   }
+  Serial.println();
+  Serial.print("WiFi: connected ");
+  Serial.println(WiFi.localIP());
+  Serial.print("WiFi RSSI: ");
+  Serial.println(WiFi.RSSI());
 }
 
 void i2s_out_init() {
@@ -127,24 +135,48 @@ void i2s_in_init() {
   i2s_set_clk(I2S_IN_PORT, SAMPLE_RATE, I2S_BITS_PER_SAMPLE_32BIT, I2S_CHANNEL_MONO);
 }
 
+void play_beep(int freq, int ms) {
+  int totalSamples = (ms * SAMPLE_RATE) / 1000;
+  int offset = 0;
+  float phase = 0.0f;
+  float step = 2.0f * 3.14159265f * (float)freq / (float)SAMPLE_RATE;
+  while (offset < totalSamples) {
+    int chunk = FRAME_SAMPLES;
+    if (totalSamples - offset < chunk) chunk = totalSamples - offset;
+    for (int i = 0; i < chunk; ++i) {
+      int16_t s = (int16_t)(sinf(phase) * 3000.0f);
+      phase += step;
+      if (phase > 2.0f * 3.14159265f) phase -= 2.0f * 3.14159265f;
+      beepBuf[2 * i] = s;
+      beepBuf[2 * i + 1] = s;
+    }
+    size_t bytesWritten = 0;
+    i2s_write(I2S_OUT_PORT, beepBuf, chunk * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+    offset += chunk;
+  }
+}
+
 void send_hello() {
   String msg = String("{\"type\":\"hello\",\"device_id\":\"") + DEVICE_ID +
                String("\",\"auth\":\"") + AUTH_TOKEN +
                String("\",\"sample_rate\":24000,\"channels\":1}");
-  ws.send(msg);
+  ws.sendTXT(msg);
+  Serial.println("WS: hello sent");
 }
 
 void send_start() {
-  ws.send("{\"type\":\"start\",\"mode\":\"voice\"}");
+  ws.sendTXT("{\"type\":\"start\",\"mode\":\"voice\"}");
+  Serial.println("WS: start sent");
 }
 
 void send_stop() {
-  ws.send("{\"type\":\"stop\"}");
+  ws.sendTXT("{\"type\":\"stop\"}");
+  Serial.println("WS: stop sent");
 }
 
 void send_ping() {
   String msg = String("{\"type\":\"ping\",\"t\":") + String(millis()) + "}";
-  ws.send(msg);
+  ws.sendTXT(msg);
 }
 
 void send_audio_frame(bool startFlag, bool endFlag) {
@@ -168,13 +200,15 @@ void send_audio_frame(bool startFlag, bool endFlag) {
   txSeq = (uint16_t)(txSeq + 1);
 
   memcpy(txFrame + 12, micPcm16, FRAME_BYTES);
-  ws.sendBinary(txFrame, sizeof(txFrame));
+  ws.sendBIN(txFrame, sizeof(txFrame));
 }
 
 void handle_json(const String& text) {
   if (text.indexOf("\"type\":\"ready\"") >= 0) {
     wsReady = true;
+    Serial.println("WS: ready");
   }
+  Serial.print("WS JSON: ");
   Serial.println(text);
 }
 
@@ -187,7 +221,6 @@ void handle_binary(const uint8_t* data, size_t len) {
   if (magic != 0xA0B1 || version != 1 || expected != len) return;
   const int16_t* pcm = reinterpret_cast<const int16_t*>(data + 12);
 
-  static int16_t outStereo[FRAME_SAMPLES * 2];
   for (int i = 0; i < samples; ++i) {
     outStereo[2 * i] = pcm[i];
     outStereo[2 * i + 1] = pcm[i];
@@ -196,52 +229,106 @@ void handle_binary(const uint8_t* data, size_t len) {
   i2s_write(I2S_OUT_PORT, outStereo, samples * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
 }
 
-void ws_connect() {
-  ws.onEvent([&](WebsocketsEvent event, String data) {
-    if (event == WebsocketsEvent::ConnectionOpened) {
+void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      Serial.println("WS: ConnectionOpened");
+      wsReady = true;
       send_hello();
-    } else if (event == WebsocketsEvent::ConnectionClosed) {
+      break;
+    case WStype_DISCONNECTED:
+      Serial.print("WS: ConnectionClosed");
+      if (length > 0) {
+        Serial.print(" payload(");
+        Serial.print(length);
+        Serial.print("): ");
+        size_t maxLen = length > 60 ? 60 : length;
+        for (size_t i = 0; i < maxLen; ++i) {
+          Serial.print((char)payload[i]);
+        }
+      }
+      Serial.println();
       wsReady = false;
+      break;
+    case WStype_TEXT: {
+      String text = String(reinterpret_cast<char*>(payload), length);
+      handle_json(text);
+      break;
     }
-  });
+    case WStype_BIN:
+      Serial.println("WS BIN");
+      handle_binary(payload, length);
+      break;
+    case WStype_PING:
+      Serial.println("WS: GotPing");
+      break;
+    case WStype_PONG:
+      Serial.println("WS: GotPong");
+      break;
+    default:
+      break;
+  }
+}
 
-  ws.onMessage([&](WebsocketsMessage message) {
-    if (message.isText()) {
-      handle_json(message.data());
-    } else if (message.isBinary()) {
-      auto bin = message.data();
-      handle_binary(reinterpret_cast<const uint8_t*>(bin.c_str()), bin.length());
-    }
-  });
-
-  // For WSS with ArduinoWebsockets, you may need setInsecure():
-  // ws.setInsecure();
-  ws.connect(WS_URL);
+void ws_connect() {
+  Serial.print("WS: wss://");
+  Serial.print(WS_HOST);
+  Serial.println(WS_PATH);
+  Serial.println("WS: attempting connect");
+  ws.onEvent(webSocketEvent);
+  ws.setReconnectInterval(2000);
+  ws.beginSSL(WS_HOST, 443, WS_PATH);
 }
 
 void setup() {
   Serial.begin(115200);
+  delay(300);
+  Serial.println("Voice client boot");
   pinMode(PIN_BTN_A, INPUT_PULLUP);
   wifi_connect();
+  WiFi.setSleep(false);
+  Serial.print("heap before ws: ");
+  Serial.println(ESP.getFreeHeap());
+  ws_connect();
+  Serial.print("heap after ws: ");
+  Serial.println(ESP.getFreeHeap());
+#if !SKIP_I2S_FOR_DEBUG
   i2s_out_init();
   i2s_in_init();
-  ws_connect();
+#endif
 }
 
 void loop() {
-  ws.poll();
+  ws.loop();
+
+#if SKIP_I2S_FOR_DEBUG
+  unsigned long now = millis();
+  if (now - lastPingMs > PING_INTERVAL_MS) {
+    lastPingMs = now;
+    send_ping();
+  }
+  return;
+#endif
 
   bool pressed = digitalRead(PIN_BTN_A) == LOW;
   if (pressed && !streaming && wsReady) {
+    Serial.println("PTT: start");
     streaming = true;
     startPending = true;
     send_start();
+#if !SKIP_I2S_FOR_DEBUG
+    play_beep(880, 60);
+#endif
   }
   if (!pressed && streaming) {
+    Serial.println("PTT: stop");
     streaming = false;
     bool endFlag = true;
     send_audio_frame(false, endFlag);
     send_stop();
+#if !SKIP_I2S_FOR_DEBUG
+    play_beep(660, 80);
+#endif
   }
 
   if (streaming && wsReady) {

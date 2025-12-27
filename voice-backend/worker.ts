@@ -1,5 +1,6 @@
 export interface Env {
   BRICKPHONE_TOKEN: string;
+  OPENAI_API_KEY: string;
 }
 
 type State = "idle" | "listening" | "thinking" | "speaking";
@@ -28,6 +29,8 @@ type ServerMsg =
 
 const MAGIC = 0xa0b1;
 const VERSION = 1;
+const OPENAI_MODEL = "gpt-4o-realtime-preview";
+const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
 
 export default {
   async fetch(request: Request, env: Env) {
@@ -62,6 +65,9 @@ function handleSession(ws: WebSocket, env: Env) {
   let ttsTimer: number | null = null;
   let flowState: "slow" | "resume" = "resume";
   const frameWindow: { t: number; ms: number }[] = [];
+  let openaiWs: WebSocket | null = null;
+  let openaiReady = false;
+  let speaking = false;
 
   const sendJson = (msg: ServerMsg) => {
     ws.send(JSON.stringify(msg));
@@ -75,27 +81,6 @@ function handleSession(ws: WebSocket, env: Env) {
   const sendErrorAndClose = (code: string, message: string) => {
     sendJson({ type: "error", code, message });
     ws.close(1008, message);
-  };
-
-  const startTts = () => {
-    stopTts();
-    setState("speaking");
-    const frames = 30;
-    const samples = Math.floor(sampleRate / 50);
-    let phase = 0;
-    const phaseStep = (2 * Math.PI * 440) / sampleRate;
-    for (let i = 0; i < frames; i++) {
-      const isStart = i === 0;
-      const isEnd = i === frames - 1;
-      const pcm = new Int16Array(samples);
-      for (let s = 0; s < samples; s++) {
-        pcm[s] = Math.floor(Math.sin(phase) * 12000);
-        phase += phaseStep;
-        if (phase > Math.PI * 2) phase -= Math.PI * 2;
-      }
-      const frame = buildPcmFrame(pcm, isStart, isEnd);
-      ws.send(frame);
-    }
   };
 
   const stopTts = () => {
@@ -145,6 +130,93 @@ function handleSession(ws: WebSocket, env: Env) {
     }
   }, 1000) as unknown as number;
 
+  const openaiSend = (msg: unknown) => {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+    openaiWs.send(JSON.stringify(msg));
+  };
+
+  const connectOpenAI = async () => {
+    const res = await fetch(OPENAI_URL, {
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        "OpenAI-Beta": "realtime=v1",
+      },
+    });
+    const wsOpenAI = res.webSocket;
+    if (!wsOpenAI) {
+      sendErrorAndClose("INTERNAL", "openai ws failed");
+      return;
+    }
+    openaiWs = wsOpenAI;
+    openaiWs.accept();
+    openaiReady = true;
+
+    openaiSend({
+      type: "session.update",
+      session: {
+        input_audio_format: "pcm16",
+        output_audio_format: "pcm16",
+        input_audio_transcription: { model: "gpt-4o-transcribe" },
+        turn_detection: { type: "none" },
+        voice: "alloy",
+      },
+    });
+
+    openaiWs.addEventListener("message", (evt) => {
+      const data = typeof evt.data === "string" ? evt.data : "";
+      if (!data) return;
+      let msg: any;
+      try {
+        msg = JSON.parse(data);
+      } catch {
+        return;
+      }
+
+      if (msg.type === "response.audio.delta") {
+        const pcmBytes = base64ToBytes(msg.delta);
+        streamPcmToClient(pcmBytes);
+        if (!speaking) {
+          speaking = true;
+          setState("speaking");
+        }
+      } else if (msg.type === "response.audio.done") {
+        speaking = false;
+        setState("idle");
+      } else if (msg.type === "response.text.delta") {
+        sendJson({ type: "assistant_text", text: msg.delta, final: false });
+      } else if (msg.type === "response.text.done") {
+        sendJson({ type: "assistant_text", text: msg.text ?? "", final: true });
+      } else if (msg.type === "input_audio_buffer.speech_started") {
+        setState("listening");
+      }
+    });
+
+    openaiWs.addEventListener("close", () => {
+      openaiReady = false;
+      openaiWs = null;
+      if (ws.readyState === WebSocket.OPEN) {
+        sendErrorAndClose("INTERNAL", "openai ws closed");
+      }
+    });
+  };
+
+  const streamPcmToClient = (pcmBytes: Uint8Array) => {
+    const totalSamples = Math.floor(pcmBytes.length / 2);
+    let sampleOffset = 0;
+    while (sampleOffset < totalSamples) {
+      const frameSamples = Math.min(480, totalSamples - sampleOffset);
+      const start = sampleOffset === 0;
+      const end = sampleOffset + frameSamples >= totalSamples;
+      const pcm = new Int16Array(pcmBytes.buffer.slice(
+        pcmBytes.byteOffset + sampleOffset * 2,
+        pcmBytes.byteOffset + (sampleOffset + frameSamples) * 2
+      ));
+      const frame = buildPcmFrame(pcm, start, end);
+      ws.send(frame);
+      sampleOffset += frameSamples;
+    }
+  };
+
   ws.addEventListener("message", (event) => {
     lastActivityMs = Date.now();
     if (typeof event.data === "string") {
@@ -179,6 +251,7 @@ function handleSession(ws: WebSocket, env: Env) {
         sessionId = crypto.randomUUID();
         sessionStartMs = Date.now();
         sendJson({ type: "ready", session_id: sessionId, sample_rate: 24000 });
+        connectOpenAI();
         return;
       }
 
@@ -190,18 +263,34 @@ function handleSession(ws: WebSocket, env: Env) {
       if (control.type === "start") {
         stopTts();
         setState("listening");
+        if (openaiReady) {
+          openaiSend({ type: "input_audio_buffer.clear" });
+        }
         return;
       }
       if (control.type === "stop") {
         setState("thinking");
         stopTts();
-        ttsTimer = setTimeout(() => startTts(), 200) as unknown as number;
+        if (openaiReady) {
+          openaiSend({ type: "input_audio_buffer.commit" });
+          openaiSend({
+            type: "response.create",
+            response: {
+              modalities: ["audio", "text"],
+              instructions: "Respond concisely and clearly.",
+            },
+          });
+        }
         return;
       }
       if (control.type === "interrupt") {
         stopTts();
         setState("listening");
         sendJson({ type: "event", value: "barge_in" });
+        if (openaiReady) {
+          openaiSend({ type: "response.cancel" });
+          openaiSend({ type: "input_audio_buffer.clear" });
+        }
         return;
       }
     } else if (event.data instanceof ArrayBuffer) {
@@ -232,6 +321,13 @@ function handleSession(ws: WebSocket, env: Env) {
       }
       clientLastSeq = seq;
       updateFlow(samples);
+      if (openaiReady) {
+        const payload = new Uint8Array(buf.slice(12));
+        openaiSend({
+          type: "input_audio_buffer.append",
+          audio: bytesToBase64(payload),
+        });
+      }
     } else {
       sendErrorAndClose("BAD_FORMAT", "unsupported frame");
     }
@@ -240,6 +336,10 @@ function handleSession(ws: WebSocket, env: Env) {
   ws.addEventListener("close", () => {
     if (idleTimer !== null) clearInterval(idleTimer);
     stopTts();
+    if (openaiWs) {
+      openaiWs.close();
+      openaiWs = null;
+    }
   });
 }
 
@@ -248,4 +348,21 @@ function concatBuffers(a: ArrayBuffer, b: ArrayBuffer) {
   out.set(new Uint8Array(a), 0);
   out.set(new Uint8Array(b), a.byteLength);
   return out.buffer;
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64: string) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
 }

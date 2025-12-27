@@ -101,3 +101,9 @@ Server -> Client:
 - Use 20 ms frames for a good balance of latency and overhead.
 - Device should display `state` transitions on the OLED.
 - Server owns all AI logic and API keys; device never receives secrets.
+
+## Worker Config
+- Required secrets:
+  - `BRICKPHONE_TOKEN` (device auth)
+  - `OPENAI_API_KEY`
+- Model: `gpt-4o-realtime-preview` over OpenAI Realtime WebSocket

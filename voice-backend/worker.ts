@@ -180,7 +180,10 @@ function handleSession(deviceWs: WebSocket, env: Env) {
     openaiSend({
       type: "session.update",
       session: {
+        type: "realtime",
         model: OPENAI_MODEL,
+        // Lock output to audio (and text if you want transcripts)
+        output_modalities: ["audio", "text"],
         audio: {
           input: {
             format: { type: "audio/pcm", rate: 24000 },

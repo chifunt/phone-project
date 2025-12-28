@@ -181,7 +181,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
       type: "session.update",
       session: {
         model: OPENAI_MODEL,
-        output_modalities: ["audio", "text"],
         audio: {
           input: {
             format: { type: "audio/pcm", rate: 24000 },

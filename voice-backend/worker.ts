@@ -180,7 +180,6 @@ function handleSession(deviceWs: WebSocket, env: Env) {
     openaiSend({
       type: "session.update",
       session: {
-        type: "realtime",
         model: OPENAI_MODEL,
         output_modalities: ["audio", "text"],
         audio: {

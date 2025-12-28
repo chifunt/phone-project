@@ -35,8 +35,8 @@ const DEVICE_SAMPLE_RATE = 24000;
 const FRAME_SAMPLES = 480; // 20 ms @ 24kHz
 
 // Use the realtime model you have enabled
-const OPENAI_MODEL = "gpt-realtime-mini";
-const OPENAI_URL = `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
+const OPENAI_MODEL = "gpt-realtime";
+const OPENAI_URL = `https://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
 
 export default {
   async fetch(request: Request, env: Env) {
@@ -156,6 +156,8 @@ function handleSession(deviceWs: WebSocket, env: Env) {
       headers: {
         Authorization: `Bearer ${env.OPENAI_API_KEY}`,
         "OpenAI-Beta": "realtime=v1",
+        Connection: "Upgrade",
+        Upgrade: "websocket",
       },
     });
 

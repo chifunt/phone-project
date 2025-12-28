@@ -180,20 +180,7 @@ function handleSession(deviceWs: WebSocket, env: Env) {
     openaiSend({
       type: "session.update",
       session: {
-        model: OPENAI_MODEL,
-        // Lock output to audio (and text if you want transcripts)
-        output_modalities: ["audio", "text"],
-        audio: {
-          input: {
-            format: { type: "audio/pcm", rate: 24000 },
-            // You can switch to semantic_vad for always-on
-            turn_detection: { type: "none" },
-          },
-          output: {
-            format: { type: "audio/pcm" },
-            voice: "alloy",
-          },
-        },
+        // Keep this minimal; your account rejects several session fields.
         instructions: "Respond concisely and clearly.",
       },
     });

@@ -35,7 +35,7 @@ const DEVICE_SAMPLE_RATE = 24000;
 const FRAME_SAMPLES = 480; // 20 ms @ 24kHz
 
 // Use the realtime model you have enabled
-const OPENAI_MODEL = "gpt-realtime";
+const OPENAI_MODEL = "gpt-realtime-mini";
 const OPENAI_URL = `https://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`;
 
 export default {

@@ -11,6 +11,8 @@ static inline float midiToHz(int midi) {
 }
 
 void AudioOutService::begin() {
+  if (taskRunning) return;
+
   i2s_config_t cfg = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
     .sample_rate = AUDIO_SAMPLE_RATE,
@@ -38,6 +40,25 @@ void AudioOutService::begin() {
 
   taskRunning = true;
   xTaskCreatePinnedToCore(audioTaskThunk, "audioOut", 4096, this, 2, &taskHandle, 1);
+}
+
+void AudioOutService::shutdown() {
+  if (!taskRunning) return;
+  taskRunning = false;
+  taskHandle = nullptr;
+  i2s_driver_uninstall(I2S_OUT_PORT);
+  portENTER_CRITICAL(&pcmMux);
+  pcmHead = 0;
+  pcmTail = 0;
+  pcmCount = 0;
+  portEXIT_CRITICAL(&pcmMux);
+  sequence = nullptr;
+  sequenceLen = 0;
+  sequenceIndex = 0;
+  currentMidi = -1;
+  noteSamplesLeft = 0;
+  noteTotalSamples = 0;
+  playing = false;
 }
 
 void AudioOutService::tick(unsigned long) {

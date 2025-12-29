@@ -2,6 +2,7 @@
 #include "DisplayService.h"
 #include "InputService.h"
 #include "Pins.h"
+#include <esp_heap_caps.h>
 
 AppRecorder::AppRecorder(MicInService& mic, AudioOutService& audio)
   : micIn(mic), audioOut(audio) {}
@@ -9,10 +10,14 @@ AppRecorder::AppRecorder(MicInService& mic, AudioOutService& audio)
 void AppRecorder::onEnter() {
   micIn.setMode(MIC_OFF);
   playing = false;
+  ensureBuffer();
 }
 
 void AppRecorder::onExit() {
   micIn.setMode(MIC_OFF);
+  recording = false;
+  playing = false;
+  freeBuffer();
 }
 
 void AppRecorder::handleInput(InputService& input) {
@@ -32,7 +37,7 @@ void AppRecorder::handleInput(InputService& input) {
 }
 
 void AppRecorder::tick(unsigned long) {
-  if (playing) {
+  if (playing && buffer) {
     int remaining = framesRecorded - playIndex;
     if (remaining <= 0) {
       playing = false;
@@ -47,6 +52,10 @@ void AppRecorder::tick(unsigned long) {
   }
 
   if (!recording) return;
+  if (!buffer) {
+    recording = false;
+    return;
+  }
   int framesLeft = kMaxFrames - framesRecorded;
   if (framesLeft <= 0) {
     stopRecording();
@@ -78,6 +87,7 @@ void AppRecorder::render(DisplayService& display) {
 }
 
 void AppRecorder::startRecording() {
+  if (!ensureBuffer()) return;
   framesRecorded = 0;
   recording = true;
   playing = false;
@@ -92,7 +102,7 @@ void AppRecorder::stopRecording() {
 }
 
 void AppRecorder::startPlayback() {
-  if (framesRecorded <= 0 || recording) return;
+  if (!buffer || framesRecorded <= 0 || recording) return;
   playing = true;
   playIndex = 0;
   audioOut.stop();
@@ -104,4 +114,32 @@ void AppRecorder::clearRecording() {
   playing = false;
   playIndex = 0;
   audioOut.stop();
+}
+
+bool AppRecorder::ensureBuffer() {
+  if (buffer) return true;
+  // Prefer PSRAM if available, else fallback to internal
+  buffer = (int16_t*)heap_caps_malloc(kMaxFrames * sizeof(int16_t),
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!buffer) {
+    buffer = (int16_t*)heap_caps_malloc(kMaxFrames * sizeof(int16_t),
+                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
+  if (!buffer) {
+    recording = false;
+    playing = false;
+    framesRecorded = 0;
+    return false;
+  }
+  framesRecorded = 0;
+  playing = false;
+  recording = false;
+  return true;
+}
+
+void AppRecorder::freeBuffer() {
+  if (buffer) {
+    heap_caps_free(buffer);
+    buffer = nullptr;
+  }
 }

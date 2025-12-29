@@ -25,9 +25,12 @@ private:
 
   static const int kMaxSeconds = 3;
   static const int kMaxFrames = AUDIO_SAMPLE_RATE * kMaxSeconds;
-  int16_t buffer[kMaxFrames];
+  int16_t* buffer = nullptr;
   int framesRecorded = 0;
   bool recording = false;
   bool playing = false;
   int playIndex = 0;
+
+  bool ensureBuffer();
+  void freeBuffer();
 };

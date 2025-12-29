@@ -32,7 +32,7 @@ SplashScreen splashScreen(audioOut, screens);
 MenuScreen menuScreen(screens, audioOut);
 AppSnake appSnake(audioOut);
 AppRecorder appRecorder(micIn, audioOut);
-AppVoice appVoice(net, micIn, audioOut);
+AppVoice appVoice(micIn, audioOut);
 AppSettings appSettings(audioOut, net, screens);
 AppPong appPong(audioOut);
 AppBreakout appBreakout(audioOut);
@@ -45,6 +45,8 @@ unsigned long lastDisplayMs = 0;
 static const unsigned long kFrameMs = 33;
 
 void setup() {
+  Serial.begin(115200);
+  delay(200);
   input.begin();
   display.begin();
   audioOut.begin();

@@ -13,6 +13,7 @@ enum SfxId {
 class AudioOutService {
 public:
   void begin();
+  void shutdown();
   void tick(unsigned long nowMs);
   void setVolume(float vol);
   void playToneMidi(int midi, int ms);

@@ -22,3 +22,4 @@ venv/
 
 # Local secrets
 brickphone-fw-voiceclient/secrets.h
+brickphone-fw/secrets.h

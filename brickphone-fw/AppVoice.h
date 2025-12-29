@@ -34,6 +34,9 @@ private:
   void handleBinary(const uint8_t* data, size_t len);
   void onWsEvent(WStype_t type, uint8_t* payload, size_t length);
   void setError(const char* msg);
+  void initI2sOut();
+  void shutdownI2sOut();
+  void playBeep(int freq, int ms);
 
   static void wsEventThunk(WStype_t type, uint8_t* payload, size_t length);
 
@@ -55,7 +58,9 @@ private:
   static const int FRAME_BYTES = FRAME_SAMPLES * 2;
   int16_t micPcm[FRAME_SAMPLES];
   uint8_t txFrame[12 + FRAME_BYTES];
-  int16_t rxBuf[FRAME_SAMPLES];
+  int16_t outStereo[FRAME_SAMPLES * 2];
+  int16_t beepBuf[FRAME_SAMPLES * 2];
+  bool i2sOutStarted = false;
 
   char errorMsg[64] = "";
 };

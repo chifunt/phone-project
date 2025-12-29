@@ -2,7 +2,10 @@
 #include "DisplayService.h"
 #include "InputService.h"
 #include "secrets.h"
+#include "Pins.h"
 #include <WiFi.h>
+#include <driver/i2s.h>
+#include <math.h>
 #include <string.h>
 #include <esp_system.h>
 #include <esp_bt.h>
@@ -12,6 +15,7 @@ static const char* WS_PATH = "/voice";
 static const char* DEVICE_ID = "brick01";
 
 static const unsigned long PING_INTERVAL_MS = 12000;
+static const i2s_port_t I2S_OUT_PORT = I2S_NUM_1;
 
 static AppVoice* gAppVoice = nullptr;
 
@@ -35,6 +39,7 @@ void AppVoice::onEnter() {
   wifiLoggedUp = false;
   errorMsg[0] = '\0';
   audioOut.shutdown(); // free memory for TLS handshake
+  shutdownI2sOut();
   micIn.setMode(MIC_OFF);
   startWifi();
 }
@@ -42,6 +47,7 @@ void AppVoice::onEnter() {
 void AppVoice::onExit() {
   streaming = false;
   micIn.setMode(MIC_OFF);
+  shutdownI2sOut();
   audioOut.begin(); // restore audio for other screens
   ws.disconnect();
   wsReady = false;
@@ -120,7 +126,7 @@ void AppVoice::handleJson(const String& text) {
   if (text.indexOf("\"type\":\"ready\"") >= 0) {
     wsReady = true;
     uiState = UI_READY;
-    audioOut.begin(); // re-init audio once WS is ready
+    initI2sOut();
   }
   if (text.indexOf("\"type\":\"error\"") >= 0) {
     setError(text.c_str());
@@ -136,19 +142,20 @@ void AppVoice::handleBinary(const uint8_t* data, size_t len) {
   if (magic != 0xA0B1 || version != 1 || expected != len) return;
   const int16_t* pcm = reinterpret_cast<const int16_t*>(data + 12);
 
-  // Queue into mono PCM ring; drop if full
+  if (!i2sOutStarted) return;
   int remaining = samples;
   int offset = 0;
   while (remaining > 0) {
-    int freeFrames = audioOut.pcmFree();
-    if (freeFrames <= 0) break;
-    int chunk = remaining < freeFrames ? remaining : freeFrames;
-    int queued = audioOut.playPcm(pcm + offset, chunk);
-    remaining -= queued;
-    offset += queued;
-  }
-  if (samples > 0 && uiState != UI_STREAMING && uiState != UI_ERROR) {
-    uiState = UI_READY; // treat as backend speaking while ready
+    int chunk = remaining > FRAME_SAMPLES ? FRAME_SAMPLES : remaining;
+    for (int i = 0; i < chunk; ++i) {
+      int16_t s = pcm[offset + i];
+      outStereo[2 * i] = s;
+      outStereo[2 * i + 1] = s;
+    }
+    size_t bytesWritten = 0;
+    i2s_write(I2S_OUT_PORT, outStereo, chunk * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+    remaining -= chunk;
+    offset += chunk;
   }
 }
 
@@ -200,7 +207,7 @@ void AppVoice::handleInput(InputService& input) {
     uiState = UI_STREAMING;
     sendStart();
     micIn.setMode(MIC_BACKEND_STREAM);
-    audioOut.playToneMidi(81, 60); // ~880 Hz start beep
+    playBeep(880, 60);
   }
 
   if (input.released(BTN_A) && streaming) {
@@ -210,7 +217,7 @@ void AppVoice::handleInput(InputService& input) {
     sendAudioFrame(false, true);
     sendStop();
     uiState = wsReady ? UI_READY : UI_WS_CONNECTING;
-    audioOut.playToneMidi(76, 80); // ~660 Hz stop beep
+    playBeep(660, 80);
   }
 }
 
@@ -285,5 +292,65 @@ void AppVoice::render(DisplayService& display) {
       display.drawCentered("ERROR", 16, 2);
       display.drawText(0, 36, errorMsg, 1);
       break;
+  }
+}
+
+void AppVoice::initI2sOut() {
+  if (i2sOutStarted) return;
+
+  i2s_config_t cfg = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = AUDIO_SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = 0,
+    .dma_buf_count = 8,
+    .dma_buf_len = FRAME_SAMPLES,
+    .use_apll = false,
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = 0
+  };
+
+  i2s_pin_config_t pins = {
+    .bck_io_num = PIN_I2S_OUT_BCK,
+    .ws_io_num = PIN_I2S_OUT_WS,
+    .data_out_num = PIN_I2S_OUT_DO,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+
+  i2s_driver_install(I2S_OUT_PORT, &cfg, 0, NULL);
+  i2s_set_pin(I2S_OUT_PORT, &pins);
+  i2s_set_clk(I2S_OUT_PORT, AUDIO_SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
+  i2sOutStarted = true;
+}
+
+void AppVoice::shutdownI2sOut() {
+  if (!i2sOutStarted) return;
+  i2s_driver_uninstall(I2S_OUT_PORT);
+  i2sOutStarted = false;
+}
+
+void AppVoice::playBeep(int freq, int ms) {
+  if (!i2sOutStarted) return;
+
+  int totalSamples = (ms * AUDIO_SAMPLE_RATE) / 1000;
+  int offset = 0;
+  float phase = 0.0f;
+  float step = 2.0f * (float)M_PI * (float)freq / (float)AUDIO_SAMPLE_RATE;
+
+  while (offset < totalSamples) {
+    int chunk = FRAME_SAMPLES;
+    if (totalSamples - offset < chunk) chunk = totalSamples - offset;
+    for (int i = 0; i < chunk; ++i) {
+      int16_t s = (int16_t)(sinf(phase) * 3000.0f);
+      phase += step;
+      if (phase > 2.0f * (float)M_PI) phase -= 2.0f * (float)M_PI;
+      beepBuf[2 * i] = s;
+      beepBuf[2 * i + 1] = s;
+    }
+    size_t bytesWritten = 0;
+    i2s_write(I2S_OUT_PORT, beepBuf, chunk * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+    offset += chunk;
   }
 }

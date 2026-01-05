@@ -1,10 +1,12 @@
 # Brickphone Firmware
 
-ESP32-S3 handheld with a 128x64 SSD1306 OLED, 8 Game Boy-style buttons, I2S speaker amp, and I2S microphone. This repo contains the main firmware plus hardware bring-up tests.
+ESP32-S3 handheld with a 128x64 SSD1306 OLED, 8 Game Boy-style buttons, I2S speaker amp, and I2S microphone. This repo contains the main firmware, a working voice client sketch, a Cloudflare Workers backend, and hardware bring-up tests.
 
 ## Firmware Layout
 - `brickphone-fw/brickphone-fw.ino` — main firmware entry
 - `brickphone-fw/` — services, screen framework, and apps
+- `brickphone-fw-voiceclient/` — standalone voice client sketch (known working)
+- `voice-backend/` — Cloudflare Workers backend + protocol spec
 - `hardware-tests/` — focused sketches for individual hardware tests
 
 ## Arduino IDE Settings
@@ -14,7 +16,7 @@ ESP32-S3 handheld with a 128x64 SSD1306 OLED, 8 Game Boy-style buttons, I2S spea
 
 ## Apps (Current)
 Order reflects the in-device menu.
-- Voice (backend placeholder)
+- Voice (live WebSocket client using `brickphone-fw/secrets.h`)
 - Recorder
 - Snake
 - Pong
@@ -35,7 +37,7 @@ Global:
 Per-app:
 - Snake: A sound toggle, SELECT speed toggle, B reset
 - Recorder: A record, B play, SELECT clear
-- Voice: hold A to talk (backend placeholder)
+- Voice: hold A to talk (WebSocket streaming to backend)
 - Pong: A pause, B reset, UP/DOWN move
 - Breakout: A launch, B reset, LEFT/RIGHT move
 - Space Invaders: A shoot, B reset, LEFT/RIGHT move
@@ -88,6 +90,7 @@ Microphone (I2S RX @ 24 kHz):
 - `Adafruit_SSD1306`
 - ESP-IDF I2S driver: `driver/i2s.h`
 - Python (Mac audio playback): `pyserial`, `sounddevice`
+- `WebSocketsClient` (Links2004)
 
 ## Hardware Tests
 - `hardware-tests/sketch-buttons-working/sketch-buttons-working.ino`
@@ -105,10 +108,30 @@ The mic test streams raw 16-bit PCM mono at 24 kHz over USB serial. `pyplayer.py
 3) Install deps (if needed): `pip3 install pyserial sounddevice`
 4) Run: `./hardware-tests/pyplayer.py`
 
+## Secrets (Local Only)
+Create `brickphone-fw/secrets.h` (gitignored) to store Wi-Fi and voice backend auth:
+
+```
+#pragma once
+#define WIFI_SSID_STR "YOUR_SSID"
+#define WIFI_PASS_STR "YOUR_PASS"
+#define BRICKPHONE_TOKEN "YOUR_TOKEN_HERE"
+```
+
+The Voice app uses these values directly for Wi‑Fi + auth.
+
+## Voice Backend
+- Protocol spec: `voice-backend/README.md`
+- Worker: `voice-backend/worker.ts` (expects `BRICKPHONE_TOKEN` and `OPENAI_API_KEY`)
+
 ## Notes
 - Buttons use `INPUT_PULLUP` (wire to GND when pressed).
 - MAX98357 SD pin should be tied to 3V3.
 - If you change pins, update them in `brickphone-fw/Pins.h`.
+
+## Known Gaps / Placeholders
+- Settings Wi‑Fi presets are placeholders (`YOUR_HOME_SSID`, etc.) and do not drive the Voice app.
+- NetService is currently Wi‑Fi only; voice streaming is handled inside `AppVoice`.
 
 ## Roadmap
 - Wi-Fi preset selection UI polish and backend transport for Voice
